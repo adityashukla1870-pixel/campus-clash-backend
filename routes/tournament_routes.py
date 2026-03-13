@@ -1,205 +1,222 @@
-print("LOADED TOURNAMENT_ROUTES FROM:", __file__)
 from flask import Blueprint, request, jsonify
-from models.tournament_model import create_tournament
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from bson import ObjectId
-from datetime import datetime
-from utils.code_generator import generate_payment_code
 from werkzeug.utils import secure_filename
+from utils.code_generator import generate_payment_code
 import os
 
-
-
-
 tournament = Blueprint("tournament", __name__)
-
 mongo = None
 
 
-def init_tournament_routes(app, mongo_instance):
+def init_tournament_routes(mongo_instance):
     global mongo
     mongo = mongo_instance
 
 
-# -------- CREATE TOURNAMENT --------
-@tournament.route("/create_tournament", methods=["POST", "OPTIONS"])
+# ---------------- PAYMENT CODE GENERATOR ----------------
+
+
+
+# ---------------- CREATE TOURNAMENT ----------------
+@tournament.route("/create", methods=["POST"])
+@jwt_required()
 def create_tournament():
+
+    email = get_jwt_identity()
+    user = mongo.db.users.find_one({"email": email})
+
+    if not user or user.get("role") != "admin":
+        return jsonify({"error": "Admin access required"}), 403
+
     data = request.json
 
     mongo.db.tournaments.insert_one({
+        "name": data["name"],
         "game": data["game"],
-        "mode": data["mode"],
         "entry_fee": data["entry_fee"],
         "prize_pool": data["prize_pool"],
-        "slots": data["slots"],
-        "date": data["date"],
+        "max_players": data.get("max_players", 100),
         "players": []
     })
 
-    return jsonify({"message": "Tournament created"}), 201
+    return jsonify({"message": "Tournament created"})
 
 
-# -------- GET ALL TOURNAMENTS --------
-@tournament.route("/tournaments", methods=["GET", "OPTIONS"])
+# ---------------- GET ALL TOURNAMENTS ----------------
+@tournament.route("/all", methods=["GET"])
 @jwt_required()
 def get_tournaments():
-    all_tournaments = []
+
+    tournaments = []
 
     for t in mongo.db.tournaments.find():
-        all_tournaments.append({
+        tournaments.append({
             "id": str(t["_id"]),
-            "game": t["game"],
-            "mode": t["mode"],
-            "entry_fee": t["entry_fee"],
-            "prize_pool": t["prize_pool"],
-            "slots": t["slots"],
-            "date": t["date"],
-            "players_joined": len(t.get("players", []))
+            "name": t.get("name"),
+            "game": t.get("game"),
+            "entry_fee": t.get("entry_fee"),
+            "prize_pool": t.get("prize_pool"),
+            "players": t.get("players", []),
+            "max_players": t.get("max_players", 100)
         })
 
-    return jsonify(all_tournaments)
+    return jsonify(tournaments)
 
 
-# -------- JOIN TOURNAMENT --------
-@tournament.route("/join_tournament/<tournament_id>", methods=["POST", "OPTIONS"])
+# ---------------- SINGLE TOURNAMENT ----------------
+@tournament.route("/<tournament_id>", methods=["GET"])
 @jwt_required()
-def join_tournament(tournament_id):
+def get_tournament(tournament_id):
 
-    user_id = get_jwt_identity()
-    tour = mongo.db.tournaments.find_one({"_id": ObjectId(tournament_id)})
+    t = mongo.db.tournaments.find_one({"_id": ObjectId(tournament_id)})
 
-    if not tour:
+    if not t:
         return jsonify({"error": "Tournament not found"}), 404
 
-    players = tour.get("players", [])
+    return jsonify({
+        "id": str(t["_id"]),
+        "name": t.get("name"),
+        "game": t.get("game"),
+        "entry_fee": t.get("entry_fee"),
+        "prize_pool": t.get("prize_pool"),
+        "players": t.get("players", []),
+        "max_players": t.get("max_players", 100)
+    })
 
-    if user_id in players:
-        return jsonify({"error": "Already joined"}), 400
 
-    if len(players) >= int(tour["slots"]):
-        return jsonify({"error": "Slots full"}), 400
+# ---------------- REGISTER (GENERATE PAYMENT CODE) ----------------
+@tournament.route("/register/<tournament_id>", methods=["POST"])
+@jwt_required()
+def register_tournament(tournament_id):
 
-    mongo.db.tournaments.update_one(
-        {"_id": ObjectId(tournament_id)},
-        {"$push": {"players": user_id}}
+    user_email = get_jwt_identity()
+
+    existing = mongo.db.registrations.find_one({
+        "user_id": user_email,
+        "tournament_id": ObjectId(tournament_id)
+    })
+
+    # Return existing code if already registered
+    if existing:
+        return jsonify({
+            "payment_code": existing["payment_code"],
+            "registration_id": str(existing["_id"])
+        })
+
+    code = generate_payment_code()
+
+    registration = {
+        "user_id": user_email,
+        "tournament_id": ObjectId(tournament_id),
+        "payment_code": code,
+        "payment_status": "pending",
+        "utr": None,
+        "screenshot": None
+    }
+
+    result = mongo.db.registrations.insert_one(registration)
+
+    return jsonify({
+        "payment_code": code,
+        "registration_id": str(result.inserted_id)
+    })
+
+
+# ---------------- UPLOAD PAYMENT ----------------
+@tournament.route("/upload-payment/<registration_id>", methods=["POST"])
+@jwt_required()
+def upload_payment(registration_id):
+
+    file = request.files["file"]
+    utr = request.form.get("utr")
+
+    filename = secure_filename(file.filename)
+
+    if not os.path.exists("uploads"):
+        os.makedirs("uploads")
+
+    path = f"uploads/{filename}"
+
+    file.save(path)
+
+    mongo.db.registrations.update_one(
+        {"_id": ObjectId(registration_id)},
+        {"$set": {
+            "utr": utr,
+            "screenshot": path
+        }}
     )
 
-    return jsonify({"message": "Joined successfully"})
+    return jsonify({"message": "Payment proof uploaded"})
 
 
+# ---------------- ADMIN - PENDING PAYMENTS ----------------
+@tournament.route("/admin/pending-payments", methods=["GET"])
+@jwt_required()
+def pending_payments():
 
-    # UPLOAD PAYMENT PROOF
-    @tournament.route("/upload-payment-proof/<registration_id>", methods=["POST", "OPTIONS"])
-    @jwt_required()
-    def upload_payment(registration_id):
+    email = get_jwt_identity()
 
-        if "file" not in request.files:
-            return jsonify({"error": "No file uploaded"}), 400
+    user = mongo.db.users.find_one({"email": email})
 
-        file = request.files["file"]
-        utr = request.form.get("utr")
+    if not user or user.get("role") != "admin":
+        return jsonify({"error": "Unauthorized"}), 403
 
-        if not utr:
-            return jsonify({"error": "UTR required"}), 400
+    pending = list(mongo.db.registrations.find({"payment_status": "pending"}))
 
-        filename = secure_filename(file.filename)
-        filepath = os.path.join("uploads", filename)
-        file.save(filepath)
+    for p in pending:
+        p["_id"] = str(p["_id"])
+        p["tournament_id"] = str(p["tournament_id"])
 
-        mongo.db.registrations.update_one(
-            {"_id": ObjectId(registration_id)},
-            {"$set": {
-                "screenshot": filepath,
-                "utr": utr,
-                "payment_status": "verification_pending"
-            }}
-        )
+    return jsonify(pending)
 
-        return jsonify({"message": "Payment proof uploaded, waiting for verification"})
 
-    # ADMIN - VIEW PENDING PAYMENTS
-    @tournament.route("/admin/pending-payments", methods=["GET", "OPTIONS"])
-    def pending_payments():
-        pending = list(mongo.db.registrations.find({"payment_status": "verification_pending"}))
+# ---------------- ADMIN - APPROVE PAYMENT ----------------
+@tournament.route("/admin/approve/<registration_id>", methods=["POST"])
+@jwt_required()
+def approve_payment(registration_id):
 
-        for p in pending:
-            p["_id"] = str(p["_id"])
-            p["user_id"] = str(p["user_id"])
-            p["tournament_id"] = str(p["tournament_id"])
+    email = get_jwt_identity()
 
-        return jsonify(pending)
+    user = mongo.db.users.find_one({"email": email})
 
-    # ADMIN - VERIFY PAYMENT
-    @tournament.route("/admin/verify-payment/<registration_id>", methods=["POST", "OPTIONS"])
-    def verify_payment(registration_id):
+    if not user or user.get("role") != "admin":
+        return jsonify({"error": "Unauthorized"}), 403
 
-        registrations = mongo.db.registrations
-        tournaments = mongo.db.tournaments
+    reg = mongo.db.registrations.find_one({"_id": ObjectId(registration_id)})
 
-        reg = registrations.find_one({"_id": ObjectId(registration_id)})
+    if not reg:
+        return jsonify({"error": "Registration not found"}), 404
 
-        if not reg:
-            return jsonify({"error": "Registration not found"}), 404
+    mongo.db.registrations.update_one(
+        {"_id": ObjectId(registration_id)},
+        {"$set": {"payment_status": "approved"}}
+    )
 
-        registrations.update_one(
-            {"_id": ObjectId(registration_id)},
-            {"$set": {"payment_status": "approved"}}
-        )
+    mongo.db.tournaments.update_one(
+        {"_id": ObjectId(reg["tournament_id"])},
+        {"$push": {"players": reg["user_id"]}}
+    )
 
-        tournaments.update_one(
-            {"_id": ObjectId(reg["tournament_id"])},
-            {"$inc": {"filled_slots": 1}}
-        )
+    return jsonify({"message": "Payment Approved"})
 
-        return jsonify({"message": "Payment approved & slot confirmed"})
 
-    # ADMIN - RELEASE ROOM
-    @tournament.route("/admin/release-room/<tournament_id>", methods=["POST", "OPTIONS"])
-    def release_room(tournament_id):
+# ---------------- ADMIN - REJECT PAYMENT ----------------
+@tournament.route("/admin/reject/<registration_id>", methods=["POST"])
+@jwt_required()
+def reject_payment(registration_id):
 
-        data = request.json
-        room_id = data.get("room_id")
-        room_password = data.get("room_password")
+    email = get_jwt_identity()
 
-        if not room_id or not room_password:
-            return jsonify({"error": "Room details required"}), 400
+    user = mongo.db.users.find_one({"email": email})
 
-        mongo.db.tournaments.update_one(
-            {"_id": ObjectId(tournament_id)},
-            {"$set": {
-                "room_id": room_id,
-                "room_password": room_password,
-                "status": "live"
-            }}
-        )
+    if not user or user.get("role") != "admin":
+        return jsonify({"error": "Unauthorized"}), 403
 
-        return jsonify({"message": "Room released successfully"})
+    mongo.db.registrations.update_one(
+        {"_id": ObjectId(registration_id)},
+        {"$set": {"payment_status": "rejected"}}
+    )
 
-    # PLAYER - VIEW MATCH DETAILS
-    @tournament.route("/my-match/<tournament_id>", methods=["GET", "OPTIONS"])
-    @jwt_required()
-    def view_match(tournament_id):
-
-        user_id = get_jwt_identity()
-
-        registration = mongo.db.registrations.find_one({
-            "user_id": user_id,
-            "tournament_id": tournament_id,
-            "payment_status": "approved"
-        })
-
-        if not registration:
-            return jsonify({"error": "Not eligible or payment not approved"}), 403
-
-        tournament_data = mongo.db.tournaments.find_one({"_id": ObjectId(tournament_id)})
-
-        if not tournament_data or tournament_data["status"] != "live":
-            return jsonify({"error": "Room not released yet"}), 400
-
-        return jsonify({
-            "room_id": tournament_data["room_id"],
-            "room_password": tournament_data["room_password"]
-        })
-
-    app.register_blueprint(tournament)
-
+    return jsonify({"message": "Payment Rejected"})

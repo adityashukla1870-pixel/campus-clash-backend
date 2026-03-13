@@ -1,4 +1,10 @@
 import random
+import string
 
-def generate_payment_code(tournament_id):
-    return f"CC{str(tournament_id)[-4:]}{random.randint(1000,9999)}"
+def generate_payment_code():
+
+    characters = string.ascii_uppercase + string.digits
+
+    code = "CC" + "".join(random.choices(characters, k=6))
+
+    return code
