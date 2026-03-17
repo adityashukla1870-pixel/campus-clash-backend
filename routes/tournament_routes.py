@@ -97,7 +97,7 @@ def register_tournament(tournament_id):
         "tournament_id": ObjectId(tournament_id)
     })
 
-    # Return existing code if already registered
+    # agar pehle se code hai
     if existing:
         return jsonify({
             "payment_code": existing["payment_code"],
@@ -122,7 +122,6 @@ def register_tournament(tournament_id):
         "registration_id": str(result.inserted_id)
     })
 
-
 # ---------------- UPLOAD PAYMENT ----------------
 @tournament.route("/upload-payment/<registration_id>", methods=["POST"])
 @jwt_required()
@@ -142,13 +141,13 @@ def upload_payment(registration_id):
 
     mongo.db.registrations.update_one(
         {"_id": ObjectId(registration_id)},
-        {"$set": {
+        {"$set":{
             "utr": utr,
             "screenshot": path
         }}
     )
 
-    return jsonify({"message": "Payment proof uploaded"})
+    return jsonify({"message":"Payment proof uploaded"})
 
 
 # ---------------- ADMIN - PENDING PAYMENTS ----------------
@@ -220,3 +219,36 @@ def reject_payment(registration_id):
     )
 
     return jsonify({"message": "Payment Rejected"})
+
+
+# ---------------- MY TOURNAMENTS ----------------
+@tournament.route("/my-tournaments", methods=["GET"])
+@jwt_required()
+def my_tournaments():
+
+    email = get_jwt_identity()
+
+    registrations = list(mongo.db.registrations.find({
+        "user_id": email
+    }))
+
+    data = []
+
+    for r in registrations:
+
+        tournament = mongo.db.tournaments.find_one({
+            "_id": ObjectId(r["tournament_id"])
+        })
+
+        if tournament:
+
+            data.append({
+                "id": str(tournament["_id"]),
+                "name": tournament["name"],
+                "game": tournament["game"],
+                "entry_fee": tournament["entry_fee"],
+                "prize_pool": tournament["prize_pool"],
+                "status": r["payment_status"]
+            })
+
+    return jsonify(data)
