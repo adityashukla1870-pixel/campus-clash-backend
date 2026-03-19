@@ -23,8 +23,11 @@ def init_tournament_routes(mongo_instance):
 @jwt_required()
 def create_tournament():
 
-    email = get_jwt_identity()
-    user = mongo.db.users.find_one({"email": email})
+    user_id = get_jwt_identity()
+
+    user = mongo.db.users.find_one({
+        "_id": ObjectId(user_id)
+    })
 
     if not user or user.get("role") != "admin":
         return jsonify({"error": "Admin access required"}), 403
@@ -32,13 +35,16 @@ def create_tournament():
     data = request.json
 
     mongo.db.tournaments.insert_one({
-        "name": data["name"],
-        "game": data["game"],
-        "entry_fee": data["entry_fee"],
-        "prize_pool": data["prize_pool"],
-        "max_players": data.get("max_players", 100),
-        "players": []
-    })
+    "name": data["name"],
+    "game": data["game"],
+    "entry_fee": data["entry_fee"],
+    "prize_pool": data["prize_pool"],
+    "max_players": data.get("max_players", 100),
+    "players": [],
+    "room_id": None,
+    "room_password": None,
+    "match_start_time": None
+})
 
     return jsonify({"message": "Tournament created"})
 
@@ -155,14 +161,18 @@ def upload_payment(registration_id):
 @jwt_required()
 def pending_payments():
 
-    email = get_jwt_identity()
+    user_id = get_jwt_identity()
 
-    user = mongo.db.users.find_one({"email": email})
+    user = mongo.db.users.find_one({
+        "_id": ObjectId(user_id)
+    })
 
     if not user or user.get("role") != "admin":
-        return jsonify({"error": "Unauthorized"}), 403
+        return jsonify({"error":"Unauthorized"}),403
 
-    pending = list(mongo.db.registrations.find({"payment_status": "pending"}))
+    pending = list(mongo.db.registrations.find({
+        "payment_status":"pending"
+    }))
 
     for p in pending:
         p["_id"] = str(p["_id"])
@@ -176,9 +186,11 @@ def pending_payments():
 @jwt_required()
 def approve_payment(registration_id):
 
-    email = get_jwt_identity()
+    user_id = get_jwt_identity()
 
-    user = mongo.db.users.find_one({"email": email})
+    user = mongo.db.users.find_one({
+    "_id": ObjectId(user_id)
+})
 
     if not user or user.get("role") != "admin":
         return jsonify({"error": "Unauthorized"}), 403
@@ -206,9 +218,11 @@ def approve_payment(registration_id):
 @jwt_required()
 def reject_payment(registration_id):
 
-    email = get_jwt_identity()
+    user_id = get_jwt_identity()
 
-    user = mongo.db.users.find_one({"email": email})
+    user = mongo.db.users.find_one({
+    "_id": ObjectId(user_id)
+})
 
     if not user or user.get("role") != "admin":
         return jsonify({"error": "Unauthorized"}), 403
@@ -252,3 +266,58 @@ def my_tournaments():
             })
 
     return jsonify(data)
+
+@tournament.route("/admin/release-room/<tournament_id>", methods=["POST"])
+@jwt_required()
+def release_room(tournament_id):
+
+    user_id = get_jwt_identity()
+
+    user = mongo.db.users.find_one({
+        "_id": ObjectId(user_id)
+    })
+
+    if not user or user.get("role") != "admin":
+        return jsonify({"error":"Unauthorized"}),403
+
+    data = request.json
+
+    room_id = data.get("room_id")
+    password = data.get("password")
+    start_time = data.get("start_time")
+
+    mongo.db.tournaments.update_one(
+        {"_id": ObjectId(tournament_id)},
+        {"$set":{
+            "room_id": room_id,
+            "room_password": password,
+            "match_start_time": start_time
+        }}
+    )
+
+    return jsonify({"message":"Room released successfully"})
+
+@tournament.route("/room/<tournament_id>", methods=["GET"])
+@jwt_required()
+def get_tournament_room(tournament_id):
+
+    user_id = get_jwt_identity()
+
+    registration = mongo.db.registrations.find_one({
+        "user_id": user_id,
+        "tournament_id": ObjectId(tournament_id),
+        "payment_status": "approved"
+    })
+
+    if not registration:
+        return jsonify({"error":"Not approved"}),403
+
+    tournament = mongo.db.tournaments.find_one({
+        "_id": ObjectId(tournament_id)
+    })
+
+    return jsonify({
+        "room_id": tournament.get("room_id"),
+        "room_password": tournament.get("room_password"),
+        "match_start_time": tournament.get("match_start_time")
+    })
