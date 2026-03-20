@@ -316,8 +316,10 @@ def get_tournament_room(tournament_id):
         "_id": ObjectId(tournament_id)
     })
 
+    match_time = tournament.get("match_start_time")
+
     return jsonify({
         "room_id": tournament.get("room_id"),
         "room_password": tournament.get("room_password"),
-        "match_start_time": tournament.get("match_start_time")
+        "match_start_time": match_time.isoformat() if match_time else None
     })
