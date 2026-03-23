@@ -13,7 +13,7 @@ from flask import send_from_directory
 app = Flask(__name__)
 app.config.from_object(Config)
 
-CORS(app)
+CORS(app, supports_credentials=True)
 
 mongo = PyMongo(app)
 jwt = JWTManager(app)

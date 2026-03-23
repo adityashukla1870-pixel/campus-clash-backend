@@ -19,9 +19,11 @@ def init_tournament_routes(mongo_instance):
 
 
 # ---------------- CREATE TOURNAMENT ----------------
-@tournament.route("/create", methods=["POST"])
+@tournament.route("/tournament/create", methods=["POST"])
 @jwt_required()
 def create_tournament():
+
+    from datetime import datetime
 
     user_id = get_jwt_identity()
 
@@ -29,24 +31,47 @@ def create_tournament():
         "_id": ObjectId(user_id)
     })
 
+    # 🔒 Admin check
     if not user or user.get("role") != "admin":
         return jsonify({"error": "Admin access required"}), 403
 
     data = request.json
 
-    mongo.db.tournaments.insert_one({
-    "name": data["name"],
-    "game": data["game"],
-    "entry_fee": data["entry_fee"],
-    "prize_pool": data["prize_pool"],
-    "max_players": data.get("max_players", 100),
-    "players": [],
-    "room_id": None,
-    "room_password": None,
-    "match_start_time": None
-})
+    name = data.get("name")
+    game = data.get("game")
+    entry_fee = data.get("entry_fee")
+    prize_pool = data.get("prize_pool")
+    max_players = data.get("max_players", 100)
 
-    return jsonify({"message": "Tournament created"})
+    # ✅ Validation
+    if not name or not entry_fee or not prize_pool:
+        return jsonify({"error": "Missing required fields"}), 400
+
+    try:
+        entry_fee = int(entry_fee)
+        prize_pool = int(prize_pool)
+        max_players = int(max_players)
+    except:
+        return jsonify({"error": "Invalid number format"}), 400
+
+    mongo.db.tournaments.insert_one({
+        "name": name,
+        "game": game,
+        "entry_fee": entry_fee,
+        "prize_pool": prize_pool,
+        "max_players": max_players,
+        "players": [],
+
+        # room system
+        "room_id": None,
+        "room_password": None,
+        "match_start_time": None,
+
+        # metadata
+        "created_at": datetime.utcnow()
+    })
+
+    return jsonify({"message": "Tournament created successfully"})
 
 
 # ---------------- GET ALL TOURNAMENTS ----------------
@@ -323,3 +348,7 @@ def get_tournament_room(tournament_id):
         "room_password": tournament.get("room_password"),
         "match_start_time": match_time.isoformat() if match_time else None
     })
+
+
+
+
