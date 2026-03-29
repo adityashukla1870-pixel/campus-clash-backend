@@ -19,7 +19,7 @@ def init_tournament_routes(mongo_instance):
 
 
 # ---------------- CREATE TOURNAMENT ----------------
-@tournament.route("/tournament/create", methods=["POST"])
+@tournament.route("/create", methods=["POST"])
 @jwt_required()
 def create_tournament():
 
