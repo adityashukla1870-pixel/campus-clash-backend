@@ -349,6 +349,62 @@ def get_tournament_room(tournament_id):
         "match_start_time": match_time.isoformat() if match_time else None
     })
 
+@tournament.route("/admin/declare-winner", methods=["POST"])
+@jwt_required()
+def declare_winner():
+
+    user_id = get_jwt_identity()
+
+    user = mongo.db.users.find_one({
+        "_id": ObjectId(user_id)
+    })
+
+    # 🔒 Admin check
+    if not user or user.get("role") != "admin":
+        return jsonify({"error": "Unauthorized"}), 403
+
+    data = request.json
+
+    tournament_id = data.get("tournament_id")
+    winner_id = data.get("winner_id")
+
+    if not tournament_id or not winner_id:
+        return jsonify({"error": "Missing fields"}), 400
+
+    mongo.db.tournaments.update_one(
+        {"_id": ObjectId(tournament_id)},
+        {
+            "$set": {
+                "winner_id": winner_id
+            }
+        }
+    )
+
+    return jsonify({"message": "Winner declared successfully"})
+
+@tournament.route("/participants/<tournament_id>", methods=["GET"])
+@jwt_required()
+def get_participants(tournament_id):
+
+    registrations = mongo.db.registrations.find({
+        "tournament_id": ObjectId(tournament_id),
+        "payment_status": "approved"
+    })
+
+    participants = []
+
+    for r in registrations:
+        user = mongo.db.users.find_one({
+            "_id": ObjectId(r["user_id"])
+        })
+
+        participants.append({
+            "user_id": r["user_id"],
+            "username": user.get("username")
+        })
+
+    return jsonify(participants)
+
 
 
 
