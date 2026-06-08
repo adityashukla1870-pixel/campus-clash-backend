@@ -119,6 +119,7 @@ def get_tournament(tournament_id):
 # ---------------- REGISTER (GENERATE PAYMENT CODE) ----------------
 @tournament.route("/register/<tournament_id>", methods=["POST"])
 @jwt_required()
+
 def register_tournament(tournament_id):
 
     user_email = get_jwt_identity()
@@ -158,7 +159,7 @@ def register_tournament(tournament_id):
 @jwt_required()
 def upload_payment(registration_id):
 
-    file = request.files["file"]
+    file = request.files.get("file")
     utr = request.form.get("utr")
 
     filename = secure_filename(file.filename)
