@@ -1,6 +1,7 @@
 from flask import Blueprint, request, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
+from bson import ObjectId
 
 auth = Blueprint("auth", __name__)
 mongo = None
@@ -62,8 +63,12 @@ additional_claims={
 @auth.route("/profile", methods=["GET"])
 @jwt_required()
 def profile():
-    email = get_jwt_identity()
-    user = mongo.db.users.find_one({"email": email})
+
+    user_id = get_jwt_identity()
+
+    user = mongo.db.users.find_one({
+        "_id": ObjectId(user_id)
+    })
 
     if not user:
         return jsonify({"error": "User not found"}), 404

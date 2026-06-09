@@ -122,10 +122,10 @@ def get_tournament(tournament_id):
 
 def register_tournament(tournament_id):
 
-    user_email = get_jwt_identity()
+    user_id = get_jwt_identity()
 
     existing = mongo.db.registrations.find_one({
-        "user_id": user_email,
+        "user_id": user_id,
         "tournament_id": ObjectId(tournament_id)
     })
 
@@ -139,7 +139,7 @@ def register_tournament(tournament_id):
     code = generate_payment_code()
 
     registration = {
-        "user_id": user_email,
+        "user_id": user_id,
         "tournament_id": ObjectId(tournament_id),
         "payment_code": code,
         "payment_status": "pending",
