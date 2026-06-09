@@ -36,7 +36,3 @@ def home():
 
 if __name__ == "__main__":
     app.run(debug=True)
-
-@app.route('/uploads/<path:filename>')
-def uploaded_file(filename):
-    return send_from_directory('uploads', filename)
