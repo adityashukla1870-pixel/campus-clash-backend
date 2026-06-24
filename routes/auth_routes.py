@@ -21,12 +21,12 @@ def register():
         return jsonify({"error": "User already exists"}), 400
 
     users.insert_one({
-        "name": data["name"],
-        "email": data["email"],
-        "password": generate_password_hash(data["password"]),
-        "college": data["college"],
-        "game_uid": data["game_uid"],
-        "role": "player"
+    "name": data["name"],
+    "email": data["email"],
+    "password": generate_password_hash(data["password"]),
+    "college": data["college"],
+    "game_profiles": {},
+    "role": "player"
     })
 
     return jsonify({"message": "Registration successful"})
