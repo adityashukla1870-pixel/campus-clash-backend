@@ -336,7 +336,7 @@ def get_tournament_room(tournament_id):
     })
 
     if not registration:
-        return jsonify({"error":"Not approved"}),403
+        return jsonify({"error": "Not approved"}), 403
 
     tournament = mongo.db.tournaments.find_one({
         "_id": ObjectId(tournament_id)
@@ -347,9 +347,8 @@ def get_tournament_room(tournament_id):
     return jsonify({
         "room_id": tournament.get("room_id"),
         "room_password": tournament.get("room_password"),
-        "match_start_time": match_time.isoformat() if match_time else None
+        "match_start_time": match_time
     })
-
 @tournament.route("/admin/declare-winner", methods=["POST"])
 @jwt_required()
 def declare_winner():
