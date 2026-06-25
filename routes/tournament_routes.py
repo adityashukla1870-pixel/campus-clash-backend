@@ -400,7 +400,7 @@ def get_participants(tournament_id):
 
         participants.append({
             "user_id": r["user_id"],
-            "username": user.get("username")
+            "name": user.get("name")
         })
 
     return jsonify(participants)
