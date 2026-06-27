@@ -266,30 +266,53 @@ def reject_payment(registration_id):
 @jwt_required()
 def my_tournaments():
 
-    email = get_jwt_identity()
+    user_id = get_jwt_identity()
 
     registrations = list(mongo.db.registrations.find({
-        "user_id": email
-    }))
+    "user_id": user_id
+     }))
 
     data = []
 
     for r in registrations:
 
         tournament = mongo.db.tournaments.find_one({
-            "_id": ObjectId(r["tournament_id"])
+        "_id": ObjectId(r["tournament_id"])
         })
 
-        if tournament:
+    if tournament:
 
-            data.append({
-                "id": str(tournament["_id"]),
-                "name": tournament["name"],
-                "game": tournament["game"],
-                "entry_fee": tournament["entry_fee"],
-                "prize_pool": tournament["prize_pool"],
-                "status": r["payment_status"]
+        # 👇 Ye naya code
+        winner_name = None
+        is_winner = False
+        status = r["payment_status"]
+
+        winner_id = tournament.get("winner_id")
+
+        if winner_id:
+
+            winner = mongo.db.users.find_one({
+                "_id": ObjectId(winner_id)
             })
+
+            if winner:
+                winner_name = winner.get("name")
+
+            if winner_id == user_id:
+                is_winner = True
+
+            status = "completed"
+
+        data.append({
+            "id": str(tournament["_id"]),
+            "name": tournament["name"],
+            "game": tournament["game"],
+            "entry_fee": tournament["entry_fee"],
+            "prize_pool": tournament["prize_pool"],
+            "status": status,
+            "winner": winner_name,
+            "is_winner": is_winner
+        })
 
     return jsonify(data)
 
