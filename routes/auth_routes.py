@@ -21,12 +21,12 @@ def register():
         return jsonify({"error": "User already exists"}), 400
 
     users.insert_one({
-    "name": data["name"],
-    "email": data["email"],
-    "password": generate_password_hash(data["password"]),
-    "college": data["college"],
-    "game_profiles": {},
-    "role": "player"
+        "name": data["name"],
+        "email": data["email"],
+        "password": generate_password_hash(data["password"]),
+        "college": data["college"],
+        "game_uid": data["game_uid"],
+        "role": "player"
     })
 
     return jsonify({"message": "Registration successful"})
@@ -73,10 +73,50 @@ def profile():
     if not user:
         return jsonify({"error": "User not found"}), 404
 
+    registrations = list(mongo.db.registrations.find({"user_id": user_id}))
+    tournaments_joined = sum(1 for r in registrations if r.get("payment_status") == "approved")
+
+    wins = 0
+    prize_won = 0
+    for r in registrations:
+        if r.get("payment_status") != "approved":
+            continue
+        t = mongo.db.tournaments.find_one({"_id": r.get("tournament_id")})
+        if t and t.get("winner_id") == user_id:
+            wins += 1
+            prize_won += t.get("prize_pool", 0)
+
     return jsonify({
         "name": user["name"],
         "email": user["email"],
         "college": user["college"],
         "game_uid": user["game_uid"],
-        "role": user["role"]
+        "role": user["role"],
+        "stats": {
+            "tournaments_joined": tournaments_joined,
+            "wins": wins,
+            "prize_won": prize_won
+        }
     })
+
+
+# UPDATE PROFILE (Protected)
+@auth.route("/profile", methods=["PUT"])
+@jwt_required()
+def update_profile():
+
+    user_id = get_jwt_identity()
+    data = request.json or {}
+
+    allowed_fields = {"name", "college", "game_uid"}
+    updates = {k: v for k, v in data.items() if k in allowed_fields and v}
+
+    if not updates:
+        return jsonify({"error": "Nothing to update"}), 400
+
+    mongo.db.users.update_one(
+        {"_id": ObjectId(user_id)},
+        {"$set": updates}
+    )
+
+    return jsonify({"message": "Profile updated successfully"})
