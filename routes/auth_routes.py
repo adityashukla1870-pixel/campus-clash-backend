@@ -25,7 +25,7 @@ def register():
         "email": data["email"],
         "password": generate_password_hash(data["password"]),
         "college": data["college"],
-        "game_uid": data["game_uid"],
+        
         "role": "player"
     })
 
