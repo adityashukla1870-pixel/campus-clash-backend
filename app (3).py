@@ -1,6 +1,3 @@
-import eventlet
-eventlet.monkey_patch()
-
 from flask import Flask
 from flask_cors import CORS
 from flask_pymongo import PyMongo
@@ -24,7 +21,7 @@ CORS(app, supports_credentials=True)
 
 mongo = PyMongo(app)
 jwt = JWTManager(app)
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 # Inject mongo into route files
 init_auth_routes(mongo)
@@ -48,4 +45,4 @@ def home():
     return "Advanced Campus Clash Backend Running"
 
 if __name__ == "__main__":
-    socketio.run(app, debug=True)
+    socketio.run(app, debug=True, allow_unsafe_werkzeug=True)
