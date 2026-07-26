@@ -360,6 +360,7 @@ def approve_payment(registration_id):
 
     t = mongo.db.tournaments.find_one({"_id": ObjectId(reg["tournament_id"])})
     create_notification(
+        mongo,
         reg["user_id"],
         f"Your payment for \"{t.get('name') if t else 'a tournament'}\" was approved. You're in!",
         ntype="payment",
@@ -384,6 +385,7 @@ def reject_payment(registration_id):
     if reg:
         t = mongo.db.tournaments.find_one({"_id": safe_object_id(reg.get("tournament_id"))})
         create_notification(
+            mongo,
             reg["user_id"],
             f"Your payment for \"{t.get('name') if t else 'a tournament'}\" was rejected. Please re-register with valid proof.",
             ntype="payment",
@@ -465,6 +467,7 @@ def release_room(tournament_id):
     })
     for r in approved:
         create_notification(
+            mongo,
             r["user_id"],
             f"Room details for \"{t.get('name') if t else 'your tournament'}\" are live. Check the room page!",
             ntype="room",
@@ -526,6 +529,7 @@ def declare_winner():
     tname = t.get("name") if t else "the tournament"
 
     create_notification(
+        mongo,
         winner_id,
         f"🏆 Congratulations! You won \"{tname}\"!",
         ntype="winner",
@@ -539,6 +543,7 @@ def declare_winner():
     })
     for r in other_participants:
         create_notification(
+            mongo,
             r["user_id"],
             f"\"{tname}\" has ended. Check the bracket to see how it played out.",
             ntype="winner",

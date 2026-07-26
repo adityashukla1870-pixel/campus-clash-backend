@@ -13,9 +13,11 @@ def init_notification_routes(mongo_instance):
     mongo = mongo_instance
 
 
-def create_notification(user_id, message, ntype="info", tournament_id=None):
-    """Helper other route files can import to push a notification to a user."""
-    mongo.db.notifications.insert_one({
+def create_notification(mongo_instance, user_id, message, ntype="info", tournament_id=None):
+    """Helper other route files can import to push a notification to a user.
+    Takes the mongo instance explicitly so it doesn't depend on this module's
+    own init having run first (avoids cross-module init-order/import issues)."""
+    mongo_instance.db.notifications.insert_one({
         "user_id": str(user_id),
         "message": message,
         "type": ntype,               # "payment" | "room" | "winner" | "info"
