@@ -325,15 +325,28 @@ def upload_payment(registration_id):
 @admin_required
 def pending_payments():
 
+    # Only show registrations where the user has actually submitted proof
+    # (UTR + screenshot). A registration that only reserved a payment code
+    # but never paid has nothing for the admin to verify yet.
     pending = list(mongo.db.registrations.find({
-        "payment_status":"pending"
+        "payment_status": "pending",
+        "utr": {"$ne": None},
+        "screenshot": {"$ne": None}
     }))
 
     for p in pending:
         p["_id"] = str(p["_id"])
+        p["tournament_id_raw"] = p["tournament_id"]
         p["tournament_id"] = str(p["tournament_id"])
+
         user = mongo.db.users.find_one({"_id": safe_object_id(p.get("user_id"))})
         p["player_name"] = user.get("name") if user else "Unknown"
+        p["player_email"] = user.get("email") if user else None
+
+        t = mongo.db.tournaments.find_one({"_id": p["tournament_id_raw"]})
+        p["tournament_name"] = t.get("name") if t else "Unknown Tournament"
+        p["entry_fee"] = t.get("entry_fee") if t else None
+        del p["tournament_id_raw"]
 
     return jsonify(pending)
 
