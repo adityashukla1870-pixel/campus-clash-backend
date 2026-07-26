@@ -1,12 +1,18 @@
+import eventlet
+eventlet.monkey_patch()
+
 from flask import Flask
 from flask_cors import CORS
 from flask_pymongo import PyMongo
 from flask_jwt_extended import JWTManager
+from flask_socketio import SocketIO
 from config import Config
 
 from routes.auth_routes import auth, init_auth_routes
 from routes.tournament_routes import tournament, init_tournament_routes
 from routes.notification_routes import notification, init_notification_routes
+from routes.chat_routes import chat, init_chat_routes
+from chat_events import register_chat_events
 from flask import send_from_directory
 
 
@@ -18,16 +24,20 @@ CORS(app, supports_credentials=True)
 
 mongo = PyMongo(app)
 jwt = JWTManager(app)
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
 
 # Inject mongo into route files
 init_auth_routes(mongo)
 init_tournament_routes(mongo)
 init_notification_routes(mongo)
+init_chat_routes(mongo)
+register_chat_events(socketio, mongo)
 
 # Register blueprints
 app.register_blueprint(auth, url_prefix="/auth")
 app.register_blueprint(tournament, url_prefix="/tournament")
 app.register_blueprint(notification, url_prefix="/notifications")
+app.register_blueprint(chat, url_prefix="/chat")
 
 @app.route('/uploads/<path:filename>')
 def get_file(filename):
@@ -38,4 +48,4 @@ def home():
     return "Advanced Campus Clash Backend Running"
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    socketio.run(app, debug=True)
