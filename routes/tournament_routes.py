@@ -238,7 +238,7 @@ def register_tournament(tournament_id):
     if not t:
         return jsonify({"error": "Tournament not found"}), 404
 
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     team_name = data.get("team_name")
     team_members = data.get("team_members", [])
 
