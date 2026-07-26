@@ -6,6 +6,7 @@ from config import Config
 
 from routes.auth_routes import auth, init_auth_routes
 from routes.tournament_routes import tournament, init_tournament_routes
+from routes.notification_routes import notification, init_notification_routes
 from flask import send_from_directory
 
 
@@ -21,10 +22,12 @@ jwt = JWTManager(app)
 # Inject mongo into route files
 init_auth_routes(mongo)
 init_tournament_routes(mongo)
+init_notification_routes(mongo)
 
 # Register blueprints
 app.register_blueprint(auth, url_prefix="/auth")
 app.register_blueprint(tournament, url_prefix="/tournament")
+app.register_blueprint(notification, url_prefix="/notifications")
 
 @app.route('/uploads/<path:filename>')
 def get_file(filename):
