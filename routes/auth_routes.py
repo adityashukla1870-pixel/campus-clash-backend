@@ -25,7 +25,7 @@ def register():
         "email": data["email"],
         "password": generate_password_hash(data["password"]),
         "college": data["college"],
-        
+        "game_uid": data["game_uid"],
         "role": "player"
     })
 
@@ -87,11 +87,11 @@ def profile():
             prize_won += t.get("prize_pool", 0)
 
     return jsonify({
-        "name": user["name"],
-        "email": user["email"],
-        "college": user["college"],
-        "game_uid": user["game_uid"],
-        "role": user["role"],
+        "name": user.get("name", ""),
+        "email": user.get("email", ""),
+        "college": user.get("college", ""),
+        "game_uid": user.get("game_uid", ""),
+        "role": user.get("role", "user"),
         "stats": {
             "tournaments_joined": tournaments_joined,
             "wins": wins,
