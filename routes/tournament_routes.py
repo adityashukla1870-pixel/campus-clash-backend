@@ -131,6 +131,8 @@ def create_tournament():
     mode = data.get("mode", "solo")          # "solo" or "squad"
     team_size = data.get("team_size", 1)     # only relevant for squad mode
     format_ = data.get("format", "quick")    # "quick" (single match) or "full" (multi-stage)
+    points_table = data.get("points_table") or {"1": 10, "2": 6, "3": 5, "4": 4, "5": 3, "6": 2, "7": 2, "8": 1, "9": 1}
+    kill_point_value = data.get("kill_point_value", 1)
 
     # ✅ Validation
     if not name or not entry_fee or not prize_pool:
@@ -163,6 +165,8 @@ def create_tournament():
         "mode": mode,
         "team_size": team_size,
         "format": format_,
+        "points_table": points_table,
+        "kill_point_value": kill_point_value,
 
         # room system
         "room_id": None,
@@ -229,6 +233,8 @@ def get_tournament(tournament_id):
         "team_size": t.get("team_size", 1),
         "status": t.get("status", "upcoming"),
         "format": t.get("format", "quick"),
+        "points_table": t.get("points_table"),
+        "kill_point_value": t.get("kill_point_value", 1),
         "has_bracket": bool(t.get("bracket"))
     })
 

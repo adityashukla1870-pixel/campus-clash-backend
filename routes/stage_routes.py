@@ -4,6 +4,7 @@ from bson import ObjectId
 from bson.errors import InvalidId
 from datetime import datetime
 from functools import wraps
+import random
 
 from routes.notification_routes import create_notification
 
@@ -37,49 +38,85 @@ def admin_required(fn):
     return wrapper
 
 
-# Standard BR (BGMI/Free Fire-style) placement points table.
-PLACEMENT_POINTS = {1: 10, 2: 6, 3: 5, 4: 4, 5: 3, 6: 2, 7: 2, 8: 1, 9: 1}
-KILL_POINT_VALUE = 1
+DEFAULT_POINTS_TABLE = {"1": 10, "2": 6, "3": 5, "4": 4, "5": 3, "6": 2, "7": 2, "8": 1, "9": 1}
+DEFAULT_KILL_POINT = 1
 
 
-def calc_points(placement, kills):
-    return PLACEMENT_POINTS.get(placement, 0) + (kills or 0) * KILL_POINT_VALUE
+def calc_points(placement, kills, points_table, kill_point_value):
+    pts = points_table.get(str(placement), 0)
+    return pts + (kills or 0) * kill_point_value
 
 
-def get_approved_roster(tournament_id):
-    """Every approved registration for a tournament, shaped as a team/player entry."""
+def get_tournament_scoring(tournament_id):
+    t = mongo.db.tournaments.find_one({"_id": ObjectId(tournament_id)})
+    if not t:
+        return None, None, None
+    points_table = t.get("points_table") or DEFAULT_POINTS_TABLE
+    kill_point_value = t.get("kill_point_value", DEFAULT_KILL_POINT)
+    return t, points_table, kill_point_value
+
+
+def get_roster_by_id(tournament_id):
+    """registration_id -> {registration_id, user_id, name, team_members} for every approved entry."""
     registrations = mongo.db.registrations.find({
         "tournament_id": ObjectId(tournament_id),
         "payment_status": "approved"
     })
-    roster = []
+    roster = {}
     for r in registrations:
         user = mongo.db.users.find_one({"_id": safe_object_id(r.get("user_id"))})
         display_name = r.get("team_name") or (user.get("name") if user else "Unknown")
-        roster.append({
+        roster[str(r["_id"])] = {
             "registration_id": str(r["_id"]),
             "user_id": r.get("user_id"),
-            "name": display_name
-        })
+            "name": display_name,
+            "team_members": r.get("team_members", [])
+        }
     return roster
 
 
-def compute_standings(stage_doc):
-    """Aggregate points/kills across every completed match in a stage."""
-    matches = list(mongo.db.stage_matches.find({
-        "stage_id": stage_doc["_id"],
-        "status": "completed"
-    }))
+def distribute_random(participants, pod_count):
+    shuffled = participants[:]
+    random.shuffle(shuffled)
+    pods = [[] for _ in range(pod_count)]
+    for i, p in enumerate(shuffled):
+        pods[i % pod_count].append(p)
+    return pods
+
+
+def distribute_snake(ranked_participants, pod_count):
+    pods = [[] for _ in range(pod_count)]
+    pod_idx = 0
+    direction = 1
+    for p in ranked_participants:
+        pods[pod_idx].append(p)
+        if direction == 1:
+            pod_idx += 1
+            if pod_idx == pod_count:
+                pod_idx = pod_count - 1
+                direction = -1
+        else:
+            pod_idx -= 1
+            if pod_idx < 0:
+                pod_idx = 0
+                direction = 1
+    return pods
+
+
+def compute_pod_standings(pod_doc):
+    matches = list(mongo.db.stage_matches.find({"pod_id": pod_doc["_id"], "status": "completed"}))
 
     totals = {}
-    for p in stage_doc.get("participants", []):
+    for p in pod_doc.get("participants", []):
         totals[p["registration_id"]] = {
             "registration_id": p["registration_id"],
             "user_id": p.get("user_id"),
             "name": p["name"],
+            "team_members": p.get("team_members", []),
             "matches_played": 0,
             "total_kills": 0,
-            "total_points": 0
+            "total_points": 0,
+            "chicken_dinners": 0
         }
 
     for m in matches:
@@ -90,16 +127,63 @@ def compute_standings(stage_doc):
             totals[rid]["matches_played"] += 1
             totals[rid]["total_kills"] += res.get("kills", 0)
             totals[rid]["total_points"] += res.get("points", 0)
+            if res.get("placement") == 1:
+                totals[rid]["chicken_dinners"] += 1
 
     standings = list(totals.values())
     standings.sort(key=lambda x: (-x["total_points"], -x["total_kills"]))
     for i, s in enumerate(standings):
         s["rank"] = i + 1
-
     return standings
 
 
-def serialize_stage(s, include_matches=False):
+def compute_match_mvp(results):
+    best = None
+    for r in results:
+        players = r.get("players") or [{"name": r["name"], "kills": r.get("kills", 0)}]
+        for p in players:
+            if best is None or p.get("kills", 0) > best["kills"]:
+                best = {
+                    "name": p["name"],
+                    "team_name": r["name"],
+                    "registration_id": r["registration_id"],
+                    "kills": p.get("kills", 0)
+                }
+    return best
+
+
+def serialize_pod(p, include_matches=False):
+    out = {
+        "id": str(p["_id"]),
+        "stage_id": str(p["stage_id"]),
+        "pod_index": p["pod_index"],
+        "name": p["name"],
+        "status": p.get("status", "active"),
+        "participants": p.get("participants", []),
+        "final_standings": p.get("final_standings")
+    }
+    if include_matches:
+        matches = list(mongo.db.stage_matches.find({"pod_id": p["_id"]}).sort("match_number", 1))
+        out["matches"] = [serialize_match(m) for m in matches]
+    return out
+
+
+def serialize_match(m):
+    return {
+        "id": str(m["_id"]),
+        "pod_id": str(m["pod_id"]),
+        "match_number": m["match_number"],
+        "map": m.get("map"),
+        "room_id": m.get("room_id"),
+        "room_password": m.get("room_password"),
+        "match_start_time": m.get("match_start_time"),
+        "status": m.get("status", "scheduled"),
+        "results": m.get("results", []),
+        "mvp": m.get("mvp")
+    }
+
+
+def serialize_stage(s, include_pods=False):
     out = {
         "id": str(s["_id"]),
         "tournament_id": str(s["tournament_id"]),
@@ -108,30 +192,16 @@ def serialize_stage(s, include_matches=False):
         "is_final": s.get("is_final", False),
         "advance_count": s.get("advance_count"),
         "status": s.get("status", "active"),
-        "participants": s.get("participants", []),
-        "final_standings": s.get("final_standings")
     }
-    if include_matches:
-        matches = list(mongo.db.stage_matches.find({"stage_id": s["_id"]}).sort("match_number", 1))
-        out["matches"] = [serialize_match(m) for m in matches]
+    pods = list(mongo.db.stage_pods.find({"stage_id": s["_id"]}).sort("pod_index", 1))
+    out["pod_count"] = len(pods)
+    out["team_count"] = sum(len(p.get("participants", [])) for p in pods)
+    if include_pods:
+        out["pods"] = [serialize_pod(p) for p in pods]
     return out
 
 
-def serialize_match(m):
-    return {
-        "id": str(m["_id"]),
-        "stage_id": str(m["stage_id"]),
-        "match_number": m["match_number"],
-        "map": m.get("map"),
-        "room_id": m.get("room_id"),
-        "room_password": m.get("room_password"),
-        "match_start_time": m.get("match_start_time"),
-        "status": m.get("status", "scheduled"),
-        "results": m.get("results", [])
-    }
-
-
-# ---------------- CREATE A STAGE ----------------
+# ---------------- CREATE A STAGE (with pods) ----------------
 @stage.route("/<tournament_id>/create", methods=["POST"])
 @admin_required
 def create_stage(tournament_id):
@@ -144,30 +214,49 @@ def create_stage(tournament_id):
     name = data.get("name")
     is_final = bool(data.get("is_final", False))
     advance_count = data.get("advance_count")
+    pod_count = max(int(data.get("pod_count", 1)), 1)
 
     if not name:
         return jsonify({"error": "Stage name is required"}), 400
 
     existing = list(mongo.db.tournament_stages.find({"tournament_id": ObjectId(tournament_id)}))
+    roster_by_id = get_roster_by_id(tournament_id)
 
     if not existing:
-        participants = get_approved_roster(tournament_id)
+        participants = list(roster_by_id.values())
         if len(participants) < 2:
             return jsonify({"error": "Need at least 2 approved participants to start a stage"}), 400
         stage_index = 0
+        distribution = distribute_random(participants, pod_count)
     else:
         prev = max(existing, key=lambda s: s["stage_index"])
         if prev.get("status") != "completed":
             return jsonify({"error": f"Finalize '{prev['name']}' before starting the next stage"}), 400
-        participants = prev.get("final_standings") or compute_standings(prev)
-        cutoff = prev.get("advance_count") or len(participants)
-        participants = [
-            {"registration_id": p["registration_id"], "user_id": p.get("user_id"), "name": p["name"]}
-            for p in participants[:cutoff]
-        ]
-        if len(participants) < 2:
+
+        prev_pods = list(mongo.db.stage_pods.find({"stage_id": prev["_id"]}))
+        pool = []
+        for pod in prev_pods:
+            standings = pod.get("final_standings") or compute_pod_standings(pod)
+            cutoff = prev.get("advance_count") or len(standings)
+            pool.extend(standings[:cutoff])
+
+        pool.sort(key=lambda x: (-x["total_points"], -x["total_kills"]))
+        # re-attach fresh team_members snapshot in case anything changed
+        enriched = []
+        for p in pool:
+            base = roster_by_id.get(p["registration_id"], {})
+            enriched.append({
+                "registration_id": p["registration_id"],
+                "user_id": p.get("user_id"),
+                "name": p["name"],
+                "team_members": base.get("team_members", [])
+            })
+
+        if len(enriched) < 2:
             return jsonify({"error": "Not enough teams advanced to start this stage"}), 400
+
         stage_index = prev["stage_index"] + 1
+        distribution = distribute_snake(enriched, pod_count)
 
     doc = {
         "tournament_id": ObjectId(tournament_id),
@@ -175,20 +264,34 @@ def create_stage(tournament_id):
         "name": name,
         "is_final": is_final,
         "advance_count": int(advance_count) if advance_count else None,
-        "participants": participants,
         "status": "active",
-        "final_standings": None,
         "created_at": datetime.utcnow()
     }
     result = mongo.db.tournament_stages.insert_one(doc)
     doc["_id"] = result.inserted_id
+
+    letters = "ABCDEFGHIJKLMNOP"
+    for i, pod_participants in enumerate(distribution):
+        if not pod_participants:
+            continue
+        pod_doc = {
+            "stage_id": doc["_id"],
+            "tournament_id": ObjectId(tournament_id),
+            "pod_index": i,
+            "name": f"Group {letters[i] if i < len(letters) else i+1}" if pod_count > 1 else name,
+            "participants": pod_participants,
+            "status": "active",
+            "final_standings": None,
+            "created_at": datetime.utcnow()
+        }
+        mongo.db.stage_pods.insert_one(pod_doc)
 
     mongo.db.tournaments.update_one(
         {"_id": ObjectId(tournament_id)},
         {"$set": {"status": "in_progress"}}
     )
 
-    return jsonify(serialize_stage(doc))
+    return jsonify(serialize_stage(doc, include_pods=True))
 
 
 # ---------------- LIST STAGES FOR A TOURNAMENT ----------------
@@ -201,46 +304,55 @@ def list_stages(tournament_id):
     return jsonify([serialize_stage(s) for s in stages])
 
 
-# ---------------- STAGE DETAIL (incl. matches) ----------------
+# ---------------- STAGE DETAIL (incl. pods) ----------------
 @stage.route("/<stage_id>", methods=["GET"])
 @jwt_required()
 def get_stage(stage_id):
     s = mongo.db.tournament_stages.find_one({"_id": safe_object_id(stage_id)})
     if not s:
         return jsonify({"error": "Stage not found"}), 404
-    return jsonify(serialize_stage(s, include_matches=True))
+    return jsonify(serialize_stage(s, include_pods=True))
 
 
-# ---------------- STANDINGS ----------------
-@stage.route("/<stage_id>/standings", methods=["GET"])
+# ---------------- POD DETAIL (incl. matches) ----------------
+@stage.route("/pods/<pod_id>", methods=["GET"])
 @jwt_required()
-def get_standings(stage_id):
-    s = mongo.db.tournament_stages.find_one({"_id": safe_object_id(stage_id)})
-    if not s:
-        return jsonify({"error": "Stage not found"}), 404
-
-    if s.get("status") == "completed" and s.get("final_standings"):
-        return jsonify(s["final_standings"])
-
-    return jsonify(compute_standings(s))
+def get_pod(pod_id):
+    p = mongo.db.stage_pods.find_one({"_id": safe_object_id(pod_id)})
+    if not p:
+        return jsonify({"error": "Pod not found"}), 404
+    return jsonify(serialize_pod(p, include_matches=True))
 
 
-# ---------------- ADD A MATCH TO A STAGE ----------------
-@stage.route("/<stage_id>/matches", methods=["POST"])
+# ---------------- POD STANDINGS ----------------
+@stage.route("/pods/<pod_id>/standings", methods=["GET"])
+@jwt_required()
+def get_pod_standings(pod_id):
+    p = mongo.db.stage_pods.find_one({"_id": safe_object_id(pod_id)})
+    if not p:
+        return jsonify({"error": "Pod not found"}), 404
+    if p.get("status") == "completed" and p.get("final_standings"):
+        return jsonify(p["final_standings"])
+    return jsonify(compute_pod_standings(p))
+
+
+# ---------------- ADD A MATCH TO A POD ----------------
+@stage.route("/pods/<pod_id>/matches", methods=["POST"])
 @admin_required
-def add_match(stage_id):
-    s = mongo.db.tournament_stages.find_one({"_id": safe_object_id(stage_id)})
-    if not s:
-        return jsonify({"error": "Stage not found"}), 404
-    if s.get("status") == "completed":
-        return jsonify({"error": "Stage already finalized"}), 400
+def add_match(pod_id):
+    p = mongo.db.stage_pods.find_one({"_id": safe_object_id(pod_id)})
+    if not p:
+        return jsonify({"error": "Pod not found"}), 404
+    if p.get("status") == "completed":
+        return jsonify({"error": "Pod already finalized"}), 400
 
     data = request.get_json(silent=True) or {}
-    match_count = mongo.db.stage_matches.count_documents({"stage_id": s["_id"]})
+    match_count = mongo.db.stage_matches.count_documents({"pod_id": p["_id"]})
 
     doc = {
-        "stage_id": s["_id"],
-        "tournament_id": s["tournament_id"],
+        "pod_id": p["_id"],
+        "stage_id": p["stage_id"],
+        "tournament_id": p["tournament_id"],
         "match_number": match_count + 1,
         "map": data.get("map"),
         "room_id": None,
@@ -248,6 +360,7 @@ def add_match(stage_id):
         "match_start_time": None,
         "status": "scheduled",
         "results": [],
+        "mvp": None,
         "created_at": datetime.utcnow()
     }
     result = mongo.db.stage_matches.insert_one(doc)
@@ -276,14 +389,14 @@ def release_match_room(match_id):
         {"$set": {"room_id": room_id, "room_password": password, "match_start_time": start_time}}
     )
 
-    s = mongo.db.tournament_stages.find_one({"_id": m["stage_id"]})
-    if s:
-        for p in s.get("participants", []):
-            if p.get("user_id"):
+    p = mongo.db.stage_pods.find_one({"_id": m["pod_id"]})
+    if p:
+        for participant in p.get("participants", []):
+            if participant.get("user_id"):
                 create_notification(
                     mongo,
-                    p["user_id"],
-                    f"Room is live for {s['name']} — Match {m['match_number']}. Check the standings page!",
+                    participant["user_id"],
+                    f"Room is live for {p['name']} — Match {m['match_number']}. Check the standings page!",
                     ntype="room",
                     tournament_id=str(m["tournament_id"])
                 )
@@ -291,7 +404,7 @@ def release_match_room(match_id):
     return jsonify({"message": "Room released"})
 
 
-# ---------------- SUBMIT MATCH RESULTS ----------------
+# ---------------- SUBMIT MATCH RESULTS (team + per-player kills) ----------------
 @stage.route("/matches/<match_id>/results", methods=["POST"])
 @admin_required
 def submit_results(match_id):
@@ -299,16 +412,20 @@ def submit_results(match_id):
     if not m:
         return jsonify({"error": "Match not found"}), 404
 
-    s = mongo.db.tournament_stages.find_one({"_id": m["stage_id"]})
-    if not s:
-        return jsonify({"error": "Stage not found"}), 404
+    p = mongo.db.stage_pods.find_one({"_id": m["pod_id"]})
+    if not p:
+        return jsonify({"error": "Pod not found"}), 404
+
+    t, points_table, kill_point_value = get_tournament_scoring(str(m["tournament_id"]))
+    if not t:
+        return jsonify({"error": "Tournament not found"}), 404
 
     data = request.get_json(silent=True) or {}
     raw_results = data.get("results", [])
     if not raw_results:
         return jsonify({"error": "No results submitted"}), 400
 
-    name_lookup = {p["registration_id"]: p for p in s.get("participants", [])}
+    name_lookup = {pt["registration_id"]: pt for pt in p.get("participants", [])}
 
     results = []
     for r in raw_results:
@@ -316,35 +433,64 @@ def submit_results(match_id):
         if rid not in name_lookup:
             continue
         placement = int(r.get("placement", 0))
-        kills = int(r.get("kills", 0))
+
+        raw_players = r.get("players")
+        if raw_players:
+            players = [{"name": pl.get("name", ""), "kills": int(pl.get("kills", 0))} for pl in raw_players]
+            kills = sum(pl["kills"] for pl in players)
+        else:
+            players = []
+            kills = int(r.get("kills", 0))
+
         results.append({
             "registration_id": rid,
             "name": name_lookup[rid]["name"],
             "placement": placement,
             "kills": kills,
-            "points": calc_points(placement, kills)
+            "points": calc_points(placement, kills, points_table, kill_point_value),
+            "players": players
         })
+
+    mvp = compute_match_mvp(results)
 
     mongo.db.stage_matches.update_one(
         {"_id": m["_id"]},
-        {"$set": {"results": results, "status": "completed"}}
+        {"$set": {"results": results, "status": "completed", "mvp": mvp}}
     )
 
     for r in results:
-        p = name_lookup.get(r["registration_id"])
-        if p and p.get("user_id"):
+        pt = name_lookup.get(r["registration_id"])
+        if pt and pt.get("user_id"):
             create_notification(
                 mongo,
-                p["user_id"],
-                f"Results are out for {s['name']} — Match {m['match_number']}: #{r['placement']} place, {r['kills']} kills ({r['points']} pts).",
+                pt["user_id"],
+                f"Results are out for {p['name']} — Match {m['match_number']}: #{r['placement']} place, {r['kills']} kills ({r['points']} pts).",
                 ntype="winner",
                 tournament_id=str(m["tournament_id"])
             )
 
-    return jsonify({"message": "Results submitted", "results": results})
+    return jsonify({"message": "Results submitted", "results": results, "mvp": mvp})
 
 
-# ---------------- FINALIZE A STAGE ----------------
+# ---------------- FINALIZE A POD ----------------
+@stage.route("/pods/<pod_id>/finalize", methods=["POST"])
+@admin_required
+def finalize_pod(pod_id):
+    p = mongo.db.stage_pods.find_one({"_id": safe_object_id(pod_id)})
+    if not p:
+        return jsonify({"error": "Pod not found"}), 404
+    if p.get("status") == "completed":
+        return jsonify({"error": "Pod already finalized"}), 400
+
+    standings = compute_pod_standings(p)
+    mongo.db.stage_pods.update_one(
+        {"_id": p["_id"]},
+        {"$set": {"status": "completed", "final_standings": standings}}
+    )
+    return jsonify({"message": "Pod finalized", "standings": standings})
+
+
+# ---------------- FINALIZE A STAGE (requires all pods finalized) ----------------
 @stage.route("/<stage_id>/finalize", methods=["POST"])
 @admin_required
 def finalize_stage(stage_id):
@@ -354,32 +500,103 @@ def finalize_stage(stage_id):
     if s.get("status") == "completed":
         return jsonify({"error": "Stage already finalized"}), 400
 
-    standings = compute_standings(s)
-    mongo.db.tournament_stages.update_one(
-        {"_id": s["_id"]},
-        {"$set": {"status": "completed", "final_standings": standings}}
+    pods = list(mongo.db.stage_pods.find({"stage_id": s["_id"]}))
+    unfinished = [pod["name"] for pod in pods if pod.get("status") != "completed"]
+    if unfinished:
+        return jsonify({"error": f"Finalize these pods first: {', '.join(unfinished)}"}), 400
+
+    mongo.db.tournament_stages.update_one({"_id": s["_id"]}, {"$set": {"status": "completed"}})
+
+    if s.get("is_final"):
+        # Merge every pod's final standings (normally just one pod for a Finals stage)
+        merged = []
+        for pod in pods:
+            merged.extend(pod.get("final_standings") or [])
+        merged.sort(key=lambda x: (-x["total_points"], -x["total_kills"]))
+
+        if merged:
+            champion = merged[0]
+            update_fields = {
+                "status": "completed",
+                "winner_registration_id": champion["registration_id"],
+                "winner_name": champion["name"]
+            }
+            if champion.get("user_id"):
+                update_fields["winner_id"] = champion["user_id"]
+
+            mongo.db.tournaments.update_one({"_id": s["tournament_id"]}, {"$set": update_fields})
+
+            for pod in pods:
+                for participant in pod.get("participants", []):
+                    if participant.get("user_id"):
+                        is_champ = participant["registration_id"] == champion["registration_id"]
+                        msg = (f"🏆 Congratulations! Your team won {s['name']}!" if is_champ
+                               else f"{s['name']} has concluded. Check the final standings!")
+                        create_notification(mongo, participant["user_id"], msg, ntype="winner",
+                                             tournament_id=str(s["tournament_id"]))
+
+    return jsonify({"message": "Stage finalized"})
+
+
+# ---------------- TOURNAMENT-WIDE STATS (overall leaderboard, frags, MVPs, chicken dinners) ----------------
+@stage.route("/tournament/<tournament_id>/stats", methods=["GET"])
+@jwt_required()
+def tournament_stats(tournament_id):
+    tid = safe_object_id(tournament_id)
+    matches = list(mongo.db.stage_matches.find({"tournament_id": tid, "status": "completed"}))
+
+    team_totals = {}
+    player_totals = {}
+    mvp_counts = {}
+
+    for m in matches:
+        for r in m.get("results", []):
+            rid = r["registration_id"]
+            team = team_totals.setdefault(rid, {
+                "registration_id": rid, "name": r["name"],
+                "total_points": 0, "total_kills": 0, "matches_played": 0, "chicken_dinners": 0
+            })
+            team["total_points"] += r.get("points", 0)
+            team["total_kills"] += r.get("kills", 0)
+            team["matches_played"] += 1
+            if r.get("placement") == 1:
+                team["chicken_dinners"] += 1
+
+            players = r.get("players") or [{"name": r["name"], "kills": r.get("kills", 0)}]
+            for pl in players:
+                key = f"{rid}::{pl['name']}"
+                entry = player_totals.setdefault(key, {
+                    "name": pl["name"], "team_name": r["name"], "registration_id": rid, "total_kills": 0
+                })
+                entry["total_kills"] += pl.get("kills", 0)
+
+        mvp = m.get("mvp")
+        if mvp:
+            key = f"{mvp['registration_id']}::{mvp['name']}"
+            entry = mvp_counts.setdefault(key, {
+                "name": mvp["name"], "team_name": mvp["team_name"], "count": 0
+            })
+            entry["count"] += 1
+
+    def ranked(items, sort_key):
+        out = sorted(items, key=sort_key)
+        for i, x in enumerate(out):
+            x["rank"] = i + 1
+        return out
+
+    overall_leaderboard = ranked(list(team_totals.values()), lambda x: (-x["total_points"], -x["total_kills"]))
+    team_frags = ranked(list(team_totals.values()), lambda x: -x["total_kills"])
+    individual_frags = ranked(list(player_totals.values()), lambda x: -x["total_kills"])
+    chicken_dinners = ranked(
+        [t for t in team_totals.values() if t["chicken_dinners"] > 0],
+        lambda x: -x["chicken_dinners"]
     )
+    mvp_leaderboard = ranked(list(mvp_counts.values()), lambda x: -x["count"])
 
-    if s.get("is_final") and standings:
-        champion = standings[0]
-        update_fields = {
-            "status": "completed",
-            "winner_registration_id": champion["registration_id"],
-            "winner_name": champion["name"]
-        }
-        if champion.get("user_id"):
-            update_fields["winner_id"] = champion["user_id"]
-
-        mongo.db.tournaments.update_one(
-            {"_id": s["tournament_id"]},
-            {"$set": update_fields}
-        )
-
-        for p in s.get("participants", []):
-            if p.get("user_id"):
-                is_champ = p["registration_id"] == champion["registration_id"]
-                msg = (f"🏆 Congratulations! Your team won {s['name']}!" if is_champ
-                       else f"{s['name']} has concluded. Check the final standings!")
-                create_notification(mongo, p["user_id"], msg, ntype="winner", tournament_id=str(s["tournament_id"]))
-
-    return jsonify({"message": "Stage finalized", "standings": standings})
+    return jsonify({
+        "overall_leaderboard": overall_leaderboard,
+        "team_frags": team_frags,
+        "individual_frags": individual_frags,
+        "chicken_dinners": chicken_dinners,
+        "mvp_leaderboard": mvp_leaderboard
+    })
