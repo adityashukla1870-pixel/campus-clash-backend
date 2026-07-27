@@ -130,6 +130,7 @@ def create_tournament():
     max_players = data.get("max_players", 100)
     mode = data.get("mode", "solo")          # "solo" or "squad"
     team_size = data.get("team_size", 1)     # only relevant for squad mode
+    format_ = data.get("format", "quick")    # "quick" (single match) or "full" (multi-stage)
 
     # ✅ Validation
     if not name or not entry_fee or not prize_pool:
@@ -137,6 +138,9 @@ def create_tournament():
 
     if mode not in ("solo", "squad"):
         return jsonify({"error": "Invalid mode"}), 400
+
+    if format_ not in ("quick", "full"):
+        return jsonify({"error": "Invalid format"}), 400
 
     try:
         entry_fee = int(entry_fee)
@@ -158,6 +162,7 @@ def create_tournament():
         "players": [],
         "mode": mode,
         "team_size": team_size,
+        "format": format_,
 
         # room system
         "room_id": None,
@@ -195,6 +200,7 @@ def get_tournaments():
             "mode": t.get("mode", "solo"),
             "team_size": t.get("team_size", 1),
             "status": t.get("status", "upcoming"),
+            "format": t.get("format", "quick"),
             "has_bracket": bool(t.get("bracket"))
         })
 
@@ -222,6 +228,7 @@ def get_tournament(tournament_id):
         "mode": t.get("mode", "solo"),
         "team_size": t.get("team_size", 1),
         "status": t.get("status", "upcoming"),
+        "format": t.get("format", "quick"),
         "has_bracket": bool(t.get("bracket"))
     })
 
@@ -448,6 +455,7 @@ def my_tournaments():
                 "status": status,
                 "is_winner": is_winner,
                 "winner": winner_name,
+                "format": t.get("format", "quick"),
                 "has_bracket": bool(t.get("bracket")),
                 "team_name": r.get("team_name")
             })
