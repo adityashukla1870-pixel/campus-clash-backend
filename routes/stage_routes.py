@@ -539,6 +539,34 @@ def finalize_stage(stage_id):
 
 
 # ---------------- TOURNAMENT-WIDE STATS (overall leaderboard, frags, MVPs, chicken dinners) ----------------
+@stage.route("/<stage_id>", methods=["DELETE"])
+@admin_required
+def delete_stage(stage_id):
+    """Cleanup tool for admins — removes a stage plus its pods and matches.
+    Mainly useful for clearing out broken/legacy test stages, or a stage
+    started by mistake before any results were entered."""
+    s = mongo.db.tournament_stages.find_one({"_id": safe_object_id(stage_id)})
+    if not s:
+        return jsonify({"error": "Stage not found"}), 404
+
+    pods = list(mongo.db.stage_pods.find({"stage_id": s["_id"]}))
+    pod_ids = [p["_id"] for p in pods]
+
+    mongo.db.stage_matches.delete_many({"pod_id": {"$in": pod_ids}})
+    mongo.db.stage_pods.delete_many({"stage_id": s["_id"]})
+    mongo.db.tournament_stages.delete_one({"_id": s["_id"]})
+
+    # If no stages remain for this tournament, drop it back out of "in_progress"
+    remaining = mongo.db.tournament_stages.count_documents({"tournament_id": s["tournament_id"]})
+    if remaining == 0:
+        mongo.db.tournaments.update_one(
+            {"_id": s["tournament_id"]},
+            {"$set": {"status": "upcoming"}}
+        )
+
+    return jsonify({"message": "Stage deleted"})
+
+
 @stage.route("/tournament/<tournament_id>/stats", methods=["GET"])
 @jwt_required()
 def tournament_stats(tournament_id):
