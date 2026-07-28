@@ -615,6 +615,9 @@ def generate_bracket(tournament_id):
     if not t:
         return jsonify({"error": "Tournament not found"}), 404
 
+    if t.get("format") == "full":
+        return jsonify({"error": "This tournament uses the multi-stage format — manage it from \"Manage Stages\" instead of the bracket tool."}), 400
+
     registrations = list(mongo.db.registrations.find({
         "tournament_id": ObjectId(tournament_id),
         "payment_status": "approved"

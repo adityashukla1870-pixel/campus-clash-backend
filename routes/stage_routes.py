@@ -336,6 +336,64 @@ def get_pod_standings(pod_id):
     return jsonify(compute_pod_standings(p))
 
 
+# ---------------- TEAMS NOT YET ASSIGNED TO ANY POD IN A STAGE ----------------
+# Covers teams whose payment got approved *after* the stage/pods were already
+# created — the pod rosters are a snapshot taken at creation time, so late
+# approvals never show up automatically. This lets an admin find and add them.
+@stage.route("/<stage_id>/unassigned", methods=["GET"])
+@admin_required
+def get_unassigned(stage_id):
+    s = mongo.db.tournament_stages.find_one({"_id": safe_object_id(stage_id)})
+    if not s:
+        return jsonify({"error": "Stage not found"}), 404
+
+    roster = get_roster_by_id(str(s["tournament_id"]))
+
+    pods = list(mongo.db.stage_pods.find({"stage_id": s["_id"]}))
+    assigned_ids = set()
+    for p in pods:
+        for participant in p.get("participants", []):
+            assigned_ids.add(participant.get("registration_id"))
+
+    unassigned = [v for k, v in roster.items() if k not in assigned_ids]
+    return jsonify(unassigned)
+
+
+# ---------------- ADD A LATE-APPROVED TEAM TO AN EXISTING POD ----------------
+@stage.route("/pods/<pod_id>/add-participant", methods=["POST"])
+@admin_required
+def add_participant_to_pod(pod_id):
+    p = mongo.db.stage_pods.find_one({"_id": safe_object_id(pod_id)})
+    if not p:
+        return jsonify({"error": "Pod not found"}), 404
+    if p.get("status") == "completed":
+        return jsonify({"error": "Pod already finalized"}), 400
+
+    data = request.get_json(silent=True) or {}
+    registration_id = data.get("registration_id")
+    if not registration_id:
+        return jsonify({"error": "registration_id is required"}), 400
+
+    roster = get_roster_by_id(str(p["tournament_id"]))
+    entry = roster.get(registration_id)
+    if not entry:
+        return jsonify({"error": "Registration not found or not approved for this tournament"}), 404
+
+    # a team can only sit in one group per stage
+    sibling_pods = list(mongo.db.stage_pods.find({"stage_id": p["stage_id"]}))
+    for sp in sibling_pods:
+        if any(part.get("registration_id") == registration_id for part in sp.get("participants", [])):
+            return jsonify({"error": "This team is already assigned to a group in this stage"}), 400
+
+    mongo.db.stage_pods.update_one(
+        {"_id": p["_id"]},
+        {"$push": {"participants": entry}}
+    )
+
+    updated = mongo.db.stage_pods.find_one({"_id": p["_id"]})
+    return jsonify(serialize_pod(updated, include_matches=True))
+
+
 # ---------------- ADD A MATCH TO A POD ----------------
 @stage.route("/pods/<pod_id>/matches", methods=["POST"])
 @admin_required
