@@ -542,6 +542,17 @@ def declare_winner():
     if not tournament_id or not winner_id:
         return jsonify({"error": "Missing fields"}), 400
 
+    approved = list(mongo.db.registrations.find({
+        "tournament_id": ObjectId(tournament_id),
+        "payment_status": "approved"
+    }))
+
+    if len(approved) < 2:
+        return jsonify({"error": "Need at least 2 approved participants before a winner can be declared"}), 400
+
+    if not any(r["user_id"] == winner_id for r in approved):
+        return jsonify({"error": "winner_id must be an approved participant of this tournament"}), 400
+
     mongo.db.tournaments.update_one(
         {"_id": ObjectId(tournament_id)},
         {

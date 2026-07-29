@@ -540,6 +540,9 @@ def finalize_pod(pod_id):
     if p.get("status") == "completed":
         return jsonify({"error": "Pod already finalized"}), 400
 
+    if len(p.get("participants", [])) < 2:
+        return jsonify({"error": "Pod needs at least 2 teams before it can be finalized"}), 400
+
     standings = compute_pod_standings(p)
     mongo.db.stage_pods.update_one(
         {"_id": p["_id"]},
@@ -571,6 +574,9 @@ def finalize_stage(stage_id):
         for pod in pods:
             merged.extend(pod.get("final_standings") or [])
         merged.sort(key=lambda x: (-x["total_points"], -x["total_kills"]))
+
+        if len(merged) < 2:
+            return jsonify({"error": "Need at least 2 teams in the final stage to declare a champion"}), 400
 
         if merged:
             champion = merged[0]
