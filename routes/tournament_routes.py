@@ -6,7 +6,6 @@ from werkzeug.utils import secure_filename
 from utils.code_generator import generate_payment_code
 from routes.notification_routes import create_notification
 from functools import wraps
-from datetime import datetime
 import os
 import random
 
@@ -47,30 +46,6 @@ def safe_object_id(value):
         return ObjectId(value)
     except (InvalidId, TypeError):
         return None
-
-
-# ---------------- REGISTRATION DEADLINE HELPERS ----------------
-
-def _parse_deadline(value):
-    """Parses a registration_deadline value (ISO string) into a naive UTC datetime.
-    Returns None if there's no deadline set or it can't be parsed."""
-    if not value:
-        return None
-    if isinstance(value, datetime):
-        return value.replace(tzinfo=None)
-    try:
-        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        return dt.replace(tzinfo=None)
-    except ValueError:
-        return None
-
-
-def _is_registration_closed(tournament):
-    """True if this tournament has a registration_deadline and it has passed."""
-    deadline = _parse_deadline(tournament.get("registration_deadline"))
-    if not deadline:
-        return False
-    return datetime.utcnow() >= deadline
 
 
 # ---------------- BRACKET HELPERS ----------------
@@ -144,7 +119,12 @@ def _resolve_byes(rounds):
 @admin_required
 def create_tournament():
 
-    data = request.json
+    from datetime import datetime
+    import json
+
+    # Form-data (not JSON) so we can also accept an optional banner image
+    # file alongside the regular fields.
+    data = request.form
 
     name = data.get("name")
     game = data.get("game")
@@ -154,12 +134,17 @@ def create_tournament():
     mode = data.get("mode", "solo")          # "solo" or "squad"
     team_size = data.get("team_size", 1)     # only relevant for squad mode
     format_ = data.get("format", "quick")    # "quick" (single match) or "full" (multi-stage)
-    points_table = data.get("points_table") or {"1": 10, "2": 6, "3": 5, "4": 4, "5": 3, "6": 2, "7": 2, "8": 1, "9": 1}
-    kill_point_value = data.get("kill_point_value", 1)
-    registration_deadline = data.get("registration_deadline")  # ISO string, or None = no deadline
 
-    if registration_deadline is not None and _parse_deadline(registration_deadline) is None:
-        return jsonify({"error": "Invalid registration_deadline format"}), 400
+    points_table_raw = data.get("points_table")
+    if points_table_raw:
+        try:
+            points_table = json.loads(points_table_raw)
+        except (TypeError, ValueError):
+            return jsonify({"error": "Invalid points_table format"}), 400
+    else:
+        points_table = {"1": 10, "2": 6, "3": 5, "4": 4, "5": 3, "6": 2, "7": 2, "8": 1, "9": 1}
+
+    kill_point_value = data.get("kill_point_value", 1)
 
     # ✅ Validation
     if not name or not entry_fee or not prize_pool:
@@ -176,11 +161,23 @@ def create_tournament():
         prize_pool = int(prize_pool)
         max_players = int(max_players)
         team_size = int(team_size) if mode == "squad" else 1
-    except:
+        kill_point_value = int(kill_point_value)
+    except (TypeError, ValueError):
         return jsonify({"error": "Invalid number format"}), 400
 
     if mode == "squad" and team_size < 2:
         return jsonify({"error": "Squad team size must be at least 2"}), 400
+
+    # Optional banner image — same upload pattern already used for payment
+    # screenshots (local /uploads folder, served via the /uploads/<file> route).
+    banner_image = None
+    banner_file = request.files.get("banner_image")
+    if banner_file and banner_file.filename:
+        filename = secure_filename(banner_file.filename)
+        if not os.path.exists("uploads"):
+            os.makedirs("uploads")
+        banner_image = f"uploads/{filename}"
+        banner_file.save(banner_image)
 
     mongo.db.tournaments.insert_one({
         "name": name,
@@ -194,7 +191,7 @@ def create_tournament():
         "format": format_,
         "points_table": points_table,
         "kill_point_value": kill_point_value,
-        "registration_deadline": registration_deadline,
+        "banner_image": banner_image,
 
         # room system
         "room_id": None,
@@ -233,9 +230,8 @@ def get_tournaments():
             "team_size": t.get("team_size", 1),
             "status": t.get("status", "upcoming"),
             "format": t.get("format", "quick"),
-            "has_bracket": bool(t.get("bracket")),
-            "registration_deadline": t.get("registration_deadline"),
-            "registration_closed": _is_registration_closed(t)
+            "banner_image": t.get("banner_image"),
+            "has_bracket": bool(t.get("bracket"))
         })
 
     return jsonify(tournaments)
@@ -263,11 +259,10 @@ def get_tournament(tournament_id):
         "team_size": t.get("team_size", 1),
         "status": t.get("status", "upcoming"),
         "format": t.get("format", "quick"),
+        "banner_image": t.get("banner_image"),
         "points_table": t.get("points_table"),
         "kill_point_value": t.get("kill_point_value", 1),
-        "has_bracket": bool(t.get("bracket")),
-        "registration_deadline": t.get("registration_deadline"),
-        "registration_closed": _is_registration_closed(t)
+        "has_bracket": bool(t.get("bracket"))
     })
 
 
@@ -301,10 +296,6 @@ def register_tournament(tournament_id):
             "payment_code": existing["payment_code"],
             "registration_id": str(existing["_id"])
         })
-
-    # Naya registration (ya rejected ke baad re-register) — deadline nikal chuki toh block
-    if _is_registration_closed(t):
-        return jsonify({"error": "Registration for this tournament is closed"}), 400
 
     code = generate_payment_code()
 
@@ -498,6 +489,7 @@ def my_tournaments():
                 "is_winner": is_winner,
                 "winner": winner_name,
                 "format": t.get("format", "quick"),
+                "banner_image": t.get("banner_image"),
                 "has_bracket": bool(t.get("bracket")),
                 "team_name": r.get("team_name")
             })
@@ -577,17 +569,6 @@ def declare_winner():
 
     if not tournament_id or not winner_id:
         return jsonify({"error": "Missing fields"}), 400
-
-    approved = list(mongo.db.registrations.find({
-        "tournament_id": ObjectId(tournament_id),
-        "payment_status": "approved"
-    }))
-
-    if len(approved) < 2:
-        return jsonify({"error": "Need at least 2 approved participants before a winner can be declared"}), 400
-
-    if not any(r["user_id"] == winner_id for r in approved):
-        return jsonify({"error": "winner_id must be an approved participant of this tournament"}), 400
 
     mongo.db.tournaments.update_one(
         {"_id": ObjectId(tournament_id)},
