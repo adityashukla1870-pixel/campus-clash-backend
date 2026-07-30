@@ -4,6 +4,7 @@ from bson import ObjectId
 from bson.errors import InvalidId
 from werkzeug.utils import secure_filename
 from utils.code_generator import generate_payment_code
+from utils.cloud_storage import upload_image
 from routes.notification_routes import create_notification
 from functools import wraps
 import os
@@ -168,16 +169,15 @@ def create_tournament():
     if mode == "squad" and team_size < 2:
         return jsonify({"error": "Squad team size must be at least 2"}), 400
 
-    # Optional banner image — same upload pattern already used for payment
-    # screenshots (local /uploads folder, served via the /uploads/<file> route).
+    # Optional banner image — uploaded to Cloudinary (not local disk) so it
+    # survives Render's ephemeral filesystem across restarts/redeploys.
     banner_image = None
     banner_file = request.files.get("banner_image")
     if banner_file and banner_file.filename:
-        filename = secure_filename(banner_file.filename)
-        if not os.path.exists("uploads"):
-            os.makedirs("uploads")
-        banner_image = f"uploads/{filename}"
-        banner_file.save(banner_image)
+        try:
+            banner_image = upload_image(banner_file, folder="campus-clash/banners")
+        except RuntimeError as e:
+            return jsonify({"error": str(e)}), 500
 
     mongo.db.tournaments.insert_one({
         "name": name,
@@ -340,20 +340,16 @@ def upload_payment(registration_id):
     if not utr:
         return jsonify({"error": "UTR / reference number is required"}), 400
 
-    filename = secure_filename(file.filename)
-
-    if not os.path.exists("uploads"):
-        os.makedirs("uploads")
-
-    path = f"uploads/{filename}"
-
-    file.save(path)
+    try:
+        screenshot_url = upload_image(file, folder="campus-clash/payments")
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 500
 
     mongo.db.registrations.update_one(
         {"_id": ObjectId(registration_id)},
         {"$set":{
             "utr": utr,
-            "screenshot": path
+            "screenshot": screenshot_url
         }}
     )
 
