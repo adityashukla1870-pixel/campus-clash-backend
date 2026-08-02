@@ -37,8 +37,9 @@ def upload_image(file, folder):
     """
     Upload a werkzeug FileStorage object to Cloudinary.
     Returns the permanent secure_url (string) to store in Mongo.
-    Raises RuntimeError if Cloudinary isn't configured, so callers can turn
-    that into a clean 500 instead of a confusing crash.
+    Always raises RuntimeError (never lets the raw Cloudinary/network
+    exception escape), so callers can turn it into a clean error response
+    with the real reason instead of a bare 500.
     """
     if not is_configured():
         raise RuntimeError(
@@ -46,5 +47,9 @@ def upload_image(file, folder):
             "CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET."
         )
 
-    result = cloudinary.uploader.upload(file, folder=folder)
+    try:
+        result = cloudinary.uploader.upload(file, folder=folder)
+    except Exception as e:
+        raise RuntimeError(f"Image upload failed: {e}")
+
     return result["secure_url"]
