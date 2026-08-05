@@ -1,6 +1,6 @@
 from flask import Blueprint, jsonify
 from flask_jwt_extended import jwt_required
-from utils.time_utils import to_utc_iso
+from models.chat_model import ensure_default_channels, serialize_channel, serialize_message
 
 chat = Blueprint("chat", __name__)
 mongo = None
@@ -9,23 +9,29 @@ mongo = None
 def init_chat_routes(mongo_instance):
     global mongo
     mongo = mongo_instance
+    # Seed the default channel list on startup so /channels never returns empty.
+    ensure_default_channels(mongo)
 
 
-@chat.route("/history", methods=["GET"])
+@chat.route("/channels", methods=["GET"])
 @jwt_required()
-def history():
+def get_channels():
+    channels = list(mongo.db.chat_channels.find())
+    if not channels:
+        # safety net in case the DB was wiped after startup seeding
+        ensure_default_channels(mongo)
+        channels = list(mongo.db.chat_channels.find())
+    return jsonify([serialize_channel(c) for c in channels])
+
+
+@chat.route("/history/<channel>", methods=["GET"])
+@jwt_required()
+def history(channel):
     messages = list(
-        mongo.db.chat_messages.find().sort("created_at", -1).limit(50)
+        mongo.db.chat_messages.find({"channel": channel, "deleted": {"$ne": True}})
+        .sort("created_at", -1)
+        .limit(50)
     )
     messages.reverse()  # oldest first for rendering top-to-bottom
 
-    data = [{
-        "id": str(m["_id"]),
-        "user_id": m.get("user_id"),
-        "name": m.get("name"),
-        "role": m.get("role", "user"),
-        "message": m.get("message"),
-        "created_at": to_utc_iso(m.get("created_at"))
-    } for m in messages]
-
-    return jsonify(data)
+    return jsonify([serialize_message(m) for m in messages])
