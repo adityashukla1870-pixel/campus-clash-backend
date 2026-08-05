@@ -17,15 +17,24 @@ def register():
     data = request.json
     users = mongo.db.users
 
-    if users.find_one({"email": data["email"]}):
+    name = data.get("name")
+    email = data.get("email")
+    password = data.get("password")
+    college = data.get("college")
+    game_uid = data.get("game_uid", "")
+
+    if not name or not email or not password:
+        return jsonify({"error": "Name, email, and password are required"}), 400
+
+    if users.find_one({"email": email}):
         return jsonify({"error": "User already exists"}), 400
 
     users.insert_one({
-        "name": data["name"],
-        "email": data["email"],
-        "password": generate_password_hash(data["password"]),
-        "college": data["college"],
-        "game_uid": data["game_uid"],
+        "name": name,
+        "email": email,
+        "password": generate_password_hash(password),
+        "college": college,
+        "game_uid": game_uid,
         "role": "player"
     })
 

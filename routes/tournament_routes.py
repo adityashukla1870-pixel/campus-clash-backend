@@ -496,11 +496,22 @@ def my_tournaments():
 @admin_required
 def release_room(tournament_id):
 
+    from datetime import datetime
+
     data = request.json
 
     room_id = data.get("room_id")
     password = data.get("password")
-    start_time = data.get("start_time")
+    start_time_raw = data.get("start_time")
+
+    start_time = None
+    if start_time_raw:
+        try:
+            # Frontend sends an ISO string (new Date().toISOString()), which
+            # ends in "Z" — Python's fromisoformat wants "+00:00" instead.
+            start_time = datetime.fromisoformat(start_time_raw.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            return jsonify({"error": "Invalid start_time format"}), 400
 
     mongo.db.tournaments.update_one(
         {"_id": ObjectId(tournament_id)},
@@ -548,10 +559,18 @@ def get_tournament_room(tournament_id):
 
     match_time = tournament.get("match_start_time")
 
+    if hasattr(match_time, "isoformat"):
+        match_time_str = match_time.isoformat()
+    elif isinstance(match_time, str):
+        # Legacy rows stored before this was parsed into a real datetime.
+        match_time_str = match_time
+    else:
+        match_time_str = None
+
     return jsonify({
         "room_id": tournament.get("room_id"),
         "room_password": tournament.get("room_password"),
-        "match_start_time": match_time.isoformat() if match_time else None
+        "match_start_time": match_time_str
     })
 
 @tournament.route("/admin/declare-winner", methods=["POST"])
