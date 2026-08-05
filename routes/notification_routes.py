@@ -3,6 +3,7 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from bson import ObjectId
 from bson.errors import InvalidId
 from datetime import datetime
+from utils.time_utils import to_utc_iso
 
 notification = Blueprint("notification", __name__)
 mongo = None
@@ -50,7 +51,7 @@ def my_notifications():
             "type": n.get("type", "info"),
             "tournament_id": n.get("tournament_id"),
             "read": n.get("read", False),
-            "created_at": n["created_at"].isoformat() if n.get("created_at") else None
+            "created_at": to_utc_iso(n.get("created_at"))
         })
 
     return jsonify({"notifications": data, "unread_count": unread_count})

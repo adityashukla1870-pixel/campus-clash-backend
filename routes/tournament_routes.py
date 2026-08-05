@@ -5,6 +5,7 @@ from bson.errors import InvalidId
 from werkzeug.utils import secure_filename
 from utils.code_generator import generate_payment_code
 from utils.cloud_storage import upload_image
+from utils.time_utils import to_utc_iso
 from routes.notification_routes import create_notification
 from functools import wraps
 import os
@@ -558,14 +559,7 @@ def get_tournament_room(tournament_id):
     })
 
     match_time = tournament.get("match_start_time")
-
-    if hasattr(match_time, "isoformat"):
-        match_time_str = match_time.isoformat()
-    elif isinstance(match_time, str):
-        # Legacy rows stored before this was parsed into a real datetime.
-        match_time_str = match_time
-    else:
-        match_time_str = None
+    match_time_str = to_utc_iso(match_time) if hasattr(match_time, "isoformat") else (match_time if isinstance(match_time, str) else None)
 
     return jsonify({
         "room_id": tournament.get("room_id"),
