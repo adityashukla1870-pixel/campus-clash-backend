@@ -18,7 +18,7 @@ def register_chat_events(socketio: SocketIO, mongo):
     def handle_connect(auth):
         token = (auth or {}).get("token")
         if not token:
-            return False  # reject connection
+            return False  # reject connectioon
 
         try:
             decoded = decode_token(token)
