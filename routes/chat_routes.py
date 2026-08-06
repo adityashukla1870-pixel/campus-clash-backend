@@ -1,5 +1,6 @@
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, request
 from flask_jwt_extended import jwt_required
+from bson import ObjectId
 from models.chat_model import ensure_default_channels, serialize_channel, serialize_message
 
 chat = Blueprint("chat", __name__)
@@ -27,11 +28,21 @@ def get_channels():
 @chat.route("/history/<channel>", methods=["GET"])
 @jwt_required()
 def history(channel):
+    query = {"channel": channel, "deleted": {"$ne": True}}
+    before = request.args.get("before")
+    if before:
+        try:
+            query["_id"] = {"$lt": ObjectId(before)}
+        except Exception:
+            return jsonify({"error": "Invalid message cursor"}), 400
+
     messages = list(
-        mongo.db.chat_messages.find({"channel": channel, "deleted": {"$ne": True}})
+        mongo.db.chat_messages.find(query)
         .sort("created_at", -1)
-        .limit(50)
+        .limit(51)
     )
+    has_more = len(messages) > 50
+    messages = messages[:50]
     messages.reverse()  # oldest first for rendering top-to-bottom
 
-    return jsonify([serialize_message(m) for m in messages])
+    return jsonify({"messages": [serialize_message(m) for m in messages], "has_more": has_more})

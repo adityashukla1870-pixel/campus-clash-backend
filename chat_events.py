@@ -12,8 +12,20 @@ online_users = {}
 
 def register_chat_events(socketio: SocketIO, mongo):
 
+    def _presence_payload():
+        # A person can have several open tabs. The presence rail should show
+        # people, not Socket.IO connections, so collapse entries by user ID.
+        members = {}
+        for user in online_users.values():
+            members[user["user_id"]] = {
+                "user_id": user["user_id"],
+                "name": user["name"],
+                "role": user["role"]
+            }
+        return {"count": len(members), "members": list(members.values())}
+
     def _broadcast_presence():
-        socketio.emit("presence_update", {"count": len(online_users)})
+        socketio.emit("presence_update", _presence_payload())
 
     @socketio.on("connect")
     def handle_connect(auth):
@@ -36,12 +48,12 @@ def register_chat_events(socketio: SocketIO, mongo):
             "user_id": user_id, "name": name, "role": role, "channel": None
         }
 
-        emit("presence_update", {"count": len(online_users)}, broadcast=True)
+        _broadcast_presence()
 
     @socketio.on("disconnect")
     def handle_disconnect():
         online_users.pop(request.sid, None)
-        emit("presence_update", {"count": len(online_users)}, broadcast=True)
+        _broadcast_presence()
 
     @socketio.on("join_channel")
     def handle_join_channel(data):
@@ -80,9 +92,15 @@ def register_chat_events(socketio: SocketIO, mongo):
         if not channel:
             return
 
-        text = (data or {}).get("message", "")
-        text = text.strip()
-        if not text or len(text) > 500:
+        text = (data or {}).get("message", "").strip()
+        image_url = (data or {}).get("image_url")
+        lfg = (data or {}).get("lfg")
+        if (not text and not image_url and not lfg) or len(text) > 500:
+            return
+
+        channel_meta = mongo.db.chat_channels.find_one({"key": channel})
+        if channel_meta and channel_meta.get("admin_only_post") and sender["role"] != "admin":
+            emit("chat_error", {"error": "Only Campus Clash staff can post in this channel."})
             return
 
         user = mongo.db.users.find_one({"_id": ObjectId(sender["user_id"])})
@@ -99,11 +117,11 @@ def register_chat_events(socketio: SocketIO, mongo):
             "role": sender["role"],
             "is_champion": bool(user.get("is_champion")) if user else False,
             "message": text,
-            "image_url": (data or {}).get("image_url"),
+            "image_url": image_url,
             "reply_to": (data or {}).get("reply_to"),
             "mentions": (data or {}).get("mentions", []),
             "reactions": {},
-            "lfg": (data or {}).get("lfg"),
+            "lfg": lfg,
             "pinned": False,
             "deleted": False,
             "edited_at": None,
