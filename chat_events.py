@@ -2,9 +2,9 @@ from flask_socketio import SocketIO, emit, join_room, leave_room
 from flask_jwt_extended import decode_token
 from flask import request
 from bson import ObjectId
-from datetime import datetime
+from datetime import datetime, timedelta
 from utils.time_utils import to_utc_iso
-from models.chat_model import censor, is_muted, is_chat_banned, serialize_message
+from models.chat_model import censor, is_muted, is_chat_banned, serialize_message, can_delete_message
 
 # sid -> {"user_id": str, "name": str, "role": str, "channel": str|None}
 online_users = {}
@@ -132,3 +132,129 @@ def register_chat_events(socketio: SocketIO, mongo):
 
         payload = serialize_message(doc)
         emit("new_message", payload, room=channel, broadcast=True)
+
+    @socketio.on("edit_message")
+    def handle_edit_message(data):
+        sender = online_users.get(request.sid)
+        if not sender:
+            return
+
+        message_id = (data or {}).get("message_id")
+        updated = ((data or {}).get("message") or "").strip()
+        if not message_id or not updated:
+            return
+
+        message = mongo.db.chat_messages.find_one({"_id": ObjectId(message_id)})
+        if not message:
+            return
+
+        actor = mongo.db.users.find_one({"_id": ObjectId(sender["user_id"])})
+        if not actor or not (sender["role"] == "admin" or str(actor.get("_id")) == str(message.get("user_id"))):
+            return
+
+        mongo.db.chat_messages.update_one(
+            {"_id": ObjectId(message_id)},
+            {"$set": {"message": censor(updated), "edited_at": datetime.utcnow()}}
+        )
+
+        updated_doc = mongo.db.chat_messages.find_one({"_id": ObjectId(message_id)})
+        socketio.emit("message_edited", {
+            "id": message_id,
+            "message": updated_doc.get("message"),
+            "edited_at": updated_doc.get("edited_at").isoformat() if updated_doc.get("edited_at") else None,
+        }, room=updated_doc.get("channel"), broadcast=True)
+
+    @socketio.on("delete_message")
+    def handle_delete_message(data):
+        sender = online_users.get(request.sid)
+        if not sender:
+            return
+
+        message_id = (data or {}).get("message_id")
+        if not message_id:
+            return
+
+        message = mongo.db.chat_messages.find_one({"_id": ObjectId(message_id)})
+        if not message:
+            return
+
+        actor = mongo.db.users.find_one({"_id": ObjectId(sender["user_id"])})
+        if not actor or not can_delete_message(actor, message):
+            return
+
+        mongo.db.chat_messages.update_one(
+            {"_id": ObjectId(message_id)},
+            {"$set": {"deleted": True, "message": "", "image_url": None, "edited_at": datetime.utcnow()}}
+        )
+        socketio.emit("message_deleted", {"id": message_id}, room=message.get("channel"), broadcast=True)
+
+    @socketio.on("toggle_pin")
+    def handle_toggle_pin(data):
+        sender = online_users.get(request.sid)
+        if not sender or sender.get("role") != "admin":
+            return
+
+        message_id = (data or {}).get("message_id")
+        if not message_id:
+            return
+
+        message = mongo.db.chat_messages.find_one({"_id": ObjectId(message_id)})
+        if not message:
+            return
+
+        next_pinned = not bool(message.get("pinned"))
+        mongo.db.chat_messages.update_one({"_id": ObjectId(message_id)}, {"$set": {"pinned": next_pinned}})
+        socketio.emit("message_pinned", {"id": message_id, "pinned": next_pinned}, room=message.get("channel"), broadcast=True)
+
+    @socketio.on("react_message")
+    def handle_react_message(data):
+        sender = online_users.get(request.sid)
+        if not sender:
+            return
+
+        message_id = (data or {}).get("message_id")
+        emoji = (data or {}).get("emoji")
+        if not message_id or not emoji:
+            return
+
+        message = mongo.db.chat_messages.find_one({"_id": ObjectId(message_id)})
+        if not message:
+            return
+
+        reactions = message.get("reactions") or {}
+        users = list(reactions.get(emoji, []))
+        if sender["user_id"] in users:
+            users.remove(sender["user_id"])
+        else:
+            users.append(sender["user_id"])
+        reactions[emoji] = users
+        mongo.db.chat_messages.update_one({"_id": ObjectId(message_id)}, {"$set": {"reactions": reactions}})
+        socketio.emit("reaction_update", {"id": message_id, "reactions": reactions}, room=message.get("channel"), broadcast=True)
+
+    @socketio.on("admin_mute_user")
+    def handle_admin_mute_user(data):
+        sender = online_users.get(request.sid)
+        if not sender or sender.get("role") != "admin":
+            return
+
+        user_id = (data or {}).get("user_id")
+        minutes = int((data or {}).get("minutes") or 10)
+        if not user_id:
+            return
+
+        mongo.db.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {"muted_until": (datetime.utcnow() + timedelta(minutes=minutes)).isoformat()}}
+        )
+
+    @socketio.on("admin_ban_user")
+    def handle_admin_ban_user(data):
+        sender = online_users.get(request.sid)
+        if not sender or sender.get("role") != "admin":
+            return
+
+        user_id = (data or {}).get("user_id")
+        if not user_id:
+            return
+
+        mongo.db.users.update_one({"_id": ObjectId(user_id)}, {"$set": {"chat_banned": True}})

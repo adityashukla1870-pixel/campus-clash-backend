@@ -86,5 +86,16 @@ def is_muted(user):
     return datetime.utcnow() < until
 
 
+def can_delete_message(actor, message):
+    if not actor or not message:
+        return False
+
+    actor_id = actor.get("_id") or actor.get("id") or actor.get("user_id")
+    if actor.get("role") == "admin":
+        return True
+
+    return str(actor_id) == str(message.get("user_id"))
+
+
 def is_chat_banned(user):
     return bool(user and user.get("chat_banned"))
