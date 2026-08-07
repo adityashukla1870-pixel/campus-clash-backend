@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
-from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
+from flask_jwt_extended import create_access_token, create_refresh_token, jwt_required, get_jwt_identity
 from bson import ObjectId
 
 auth = Blueprint("auth", __name__)
@@ -62,9 +62,12 @@ additional_claims={
 }
 )
 
+    refresh = create_refresh_token(identity=str(user["_id"]))
+
     return jsonify({
         "message": "Login successful",
-        "token": token
+        "token": token,
+        "refresh": refresh
     })
 
 
@@ -107,6 +110,15 @@ def profile():
             "prize_won": prize_won
         }
     })
+
+
+# REFRESH ACCESS TOKEN
+@auth.route("/refresh", methods=["POST"])
+@jwt_required(refresh=True)
+def refresh_token():
+    identity = get_jwt_identity()
+    new_token = create_access_token(identity=identity)
+    return jsonify({"token": new_token})
 
 
 # UPDATE PROFILE (Protected)
