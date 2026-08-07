@@ -7,6 +7,7 @@ from utils.code_generator import generate_payment_code
 from utils.cloud_storage import upload_image
 from utils.time_utils import to_utc_iso
 from routes.notification_routes import create_notification
+from utils.tournament_lifecycle import build_winner_update, normalize_tournament_payload
 from functools import wraps
 import os
 import random
@@ -136,6 +137,8 @@ def create_tournament():
     mode = data.get("mode", "solo")          # "solo" or "squad"
     team_size = data.get("team_size", 1)     # only relevant for squad mode
     format_ = data.get("format", "quick")    # "quick" (single match) or "full" (multi-stage)
+    structure = data.get("structure", "group_playoff")
+    seed_strategy = data.get("seed_strategy", "random")
 
     points_table_raw = data.get("points_table")
     if points_table_raw:
@@ -180,33 +183,29 @@ def create_tournament():
         except RuntimeError as e:
             return jsonify({"error": str(e)}), 500
 
-    mongo.db.tournaments.insert_one({
+    payload = normalize_tournament_payload({
         "name": name,
         "game": game,
         "entry_fee": entry_fee,
         "prize_pool": prize_pool,
         "max_players": max_players,
-        "players": [],
         "mode": mode,
         "team_size": team_size,
         "format": format_,
         "points_table": points_table,
         "kill_point_value": kill_point_value,
-        "banner_image": banner_image,
-
-        # room system
-        "room_id": None,
-        "room_password": None,
-        "match_start_time": None,
-
-        # bracket / results
-        "bracket": None,
-        "winner_id": None,
-        "status": "upcoming",
-
-        # metadata
-        "created_at": datetime.utcnow()
+        "structure": structure,
+        "seed_strategy": seed_strategy,
     })
+    payload.update({
+        "players": [],
+        "banner_image": banner_image,
+        "created_at": datetime.utcnow(),
+        "structure": structure,
+        "seed_strategy": seed_strategy,
+    })
+
+    mongo.db.tournaments.insert_one(payload)
 
     return jsonify({"message": "Tournament created successfully"})
 
@@ -231,8 +230,12 @@ def get_tournaments():
             "team_size": t.get("team_size", 1),
             "status": t.get("status", "upcoming"),
             "format": t.get("format", "quick"),
+            "structure": t.get("structure", "group_playoff"),
+            "seed_strategy": t.get("seed_strategy", "random"),
             "banner_image": t.get("banner_image"),
-            "has_bracket": bool(t.get("bracket"))
+            "has_bracket": bool(t.get("bracket")),
+            "winner_name": t.get("winner_name"),
+            "winner_source": t.get("winner_source")
         })
 
     return jsonify(tournaments)
@@ -260,10 +263,15 @@ def get_tournament(tournament_id):
         "team_size": t.get("team_size", 1),
         "status": t.get("status", "upcoming"),
         "format": t.get("format", "quick"),
+        "structure": t.get("structure", "group_playoff"),
+        "seed_strategy": t.get("seed_strategy", "random"),
         "banner_image": t.get("banner_image"),
         "points_table": t.get("points_table"),
         "kill_point_value": t.get("kill_point_value", 1),
-        "has_bracket": bool(t.get("bracket"))
+        "has_bracket": bool(t.get("bracket")),
+        "winner_name": t.get("winner_name"),
+        "winner_registration_id": t.get("winner_registration_id"),
+        "winner_source": t.get("winner_source")
     })
 
 
@@ -579,14 +587,27 @@ def declare_winner():
     if not tournament_id or not winner_id:
         return jsonify({"error": "Missing fields"}), 400
 
+    winner_entry = {
+        "registration_id": None,
+        "user_id": winner_id,
+        "name": None,
+    }
+
+    participant = mongo.db.registrations.find_one({
+        "tournament_id": ObjectId(tournament_id),
+        "user_id": winner_id,
+        "payment_status": "approved"
+    })
+    if participant:
+        winner_entry["registration_id"] = str(participant["_id"])
+        winner_entry["name"] = participant.get("team_name") or participant.get("name")
+
+    update_fields = build_winner_update(winner_entry, stage_name="Manual declaration", source="admin_override")
+    update_fields["winner_id"] = winner_id
+
     mongo.db.tournaments.update_one(
         {"_id": ObjectId(tournament_id)},
-        {
-            "$set": {
-                "winner_id": winner_id,
-                "status": "completed"
-            }
-        }
+        {"$set": update_fields}
     )
 
     t = mongo.db.tournaments.find_one({"_id": ObjectId(tournament_id)})

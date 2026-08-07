@@ -4,9 +4,9 @@ from bson import ObjectId
 from bson.errors import InvalidId
 from datetime import datetime
 from functools import wraps
-import random
 
 from routes.notification_routes import create_notification
+from utils.tournament_lifecycle import build_stage_seed_distribution, build_winner_update
 
 stage = Blueprint("stage", __name__)
 mongo = None
@@ -76,31 +76,11 @@ def get_roster_by_id(tournament_id):
 
 
 def distribute_random(participants, pod_count):
-    shuffled = participants[:]
-    random.shuffle(shuffled)
-    pods = [[] for _ in range(pod_count)]
-    for i, p in enumerate(shuffled):
-        pods[i % pod_count].append(p)
-    return pods
+    return build_stage_seed_distribution(participants, pod_count, strategy="random")
 
 
 def distribute_snake(ranked_participants, pod_count):
-    pods = [[] for _ in range(pod_count)]
-    pod_idx = 0
-    direction = 1
-    for p in ranked_participants:
-        pods[pod_idx].append(p)
-        if direction == 1:
-            pod_idx += 1
-            if pod_idx == pod_count:
-                pod_idx = pod_count - 1
-                direction = -1
-        else:
-            pod_idx -= 1
-            if pod_idx < 0:
-                pod_idx = 0
-                direction = 1
-    return pods
+    return build_stage_seed_distribution(ranked_participants, pod_count, strategy="snake")
 
 
 def compute_pod_standings(pod_doc):
@@ -215,6 +195,7 @@ def create_stage(tournament_id):
     is_final = bool(data.get("is_final", False))
     advance_count = data.get("advance_count")
     pod_count = max(int(data.get("pod_count", 1)), 1)
+    seed_strategy = data.get("seed_strategy") or t.get("seed_strategy", "random")
 
     if not name:
         return jsonify({"error": "Stage name is required"}), 400
@@ -227,7 +208,7 @@ def create_stage(tournament_id):
         if len(participants) < 2:
             return jsonify({"error": "Need at least 2 approved participants to start a stage"}), 400
         stage_index = 0
-        distribution = distribute_random(participants, pod_count)
+        distribution = distribute_random(participants, pod_count) if seed_strategy != "snake" else distribute_snake(participants, pod_count)
     else:
         prev = max(existing, key=lambda s: s["stage_index"])
         if prev.get("status") != "completed":
@@ -288,7 +269,19 @@ def create_stage(tournament_id):
 
     mongo.db.tournaments.update_one(
         {"_id": ObjectId(tournament_id)},
-        {"$set": {"status": "in_progress"}}
+        {
+            "$set": {"status": "in_progress"},
+            "$push": {
+                "stage_flow": {
+                    "stage_id": str(doc["_id"]),
+                    "name": name,
+                    "stage_index": stage_index,
+                    "is_final": is_final,
+                    "status": "active",
+                    "created_at": datetime.utcnow()
+                }
+            }
+        }
     )
 
     return jsonify(serialize_stage(doc, include_pods=True))
@@ -580,14 +573,7 @@ def finalize_stage(stage_id):
 
         if merged:
             champion = merged[0]
-            update_fields = {
-                "status": "completed",
-                "winner_registration_id": champion["registration_id"],
-                "winner_name": champion["name"]
-            }
-            if champion.get("user_id"):
-                update_fields["winner_id"] = champion["user_id"]
-
+            update_fields = build_winner_update(champion, stage_name=s["name"], source="final_stage")
             mongo.db.tournaments.update_one({"_id": s["tournament_id"]}, {"$set": update_fields})
 
             for pod in pods:
