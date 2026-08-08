@@ -15,8 +15,7 @@ def init_auth_routes(mongo_instance):
 # GOOGLE AUTH
 @auth.route("/google", methods=["POST"])
 def google_login():
-    from authlib.jose import jwt as jose_jwt
-    import requests
+    import requests as http_requests
 
     data = request.json
     credential = data.get("credential")
@@ -27,38 +26,30 @@ def google_login():
     client_id = current_app.config.get("GOOGLE_CLIENT_ID")
 
     try:
-        # Decode the Google ID token header to get the key ID
-        header = jose_jwt.get_header(credential)
-        key_id = header.get("kid")
+        # Verify token with Google's tokeninfo endpoint
+        resp = http_requests.get(
+            f"https://oauth2.googleapis.com/tokeninfo?id_token={credential}",
+            timeout=10
+        )
 
-        # Fetch Google's public keys
-        google_keys = requests.get("https://www.googleapis.com/oauth2/v3/certs", timeout=10).json()
-        key = next((k for k in google_keys["keys"] if k["kid"] == key_id), None)
-
-        if not key:
+        if resp.status_code != 200:
             return jsonify({"error": "Invalid Google token"}), 401
 
-        # Verify the token
-        claims = jose_jwt.decode(credential, key)
-        claims.validate()
+        token_data = resp.json()
 
-        # Verify audience (our client ID)
-        if claims.get("aud") != client_id:
+        # Verify audience
+        if token_data.get("aud") != client_id:
             return jsonify({"error": "Invalid audience"}), 401
 
-        # Verify issuer
-        if claims.get("iss") not in ("accounts.google.com", "https://accounts.google.com"):
-            return jsonify({"error": "Invalid issuer"}), 401
-
-        email = claims.get("email")
-        name = claims.get("name", "")
-        picture = claims.get("picture", "")
+        email = token_data.get("email")
+        name = token_data.get("name", "")
+        picture = token_data.get("picture", "")
 
         if not email:
             return jsonify({"error": "No email in Google token"}), 401
 
     except Exception as e:
-        return jsonify({"error": f"Invalid Google token: {str(e)}"}), 401
+        return jsonify({"error": f"Google verification failed: {str(e)}"}), 401
 
     users = mongo.db.users
     user = users.find_one({"email": email})
