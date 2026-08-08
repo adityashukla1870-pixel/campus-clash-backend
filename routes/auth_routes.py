@@ -1,7 +1,8 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, current_app
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_jwt_extended import create_access_token, create_refresh_token, jwt_required, get_jwt_identity
 from bson import ObjectId
+import secrets
 
 auth = Blueprint("auth", __name__)
 mongo = None
@@ -9,6 +10,90 @@ mongo = None
 def init_auth_routes(mongo_instance):
     global mongo
     mongo = mongo_instance
+
+
+# GOOGLE AUTH
+@auth.route("/google", methods=["POST"])
+def google_login():
+    from authlib.jose import jwt as jose_jwt
+    import requests
+
+    data = request.json
+    credential = data.get("credential")
+
+    if not credential:
+        return jsonify({"error": "Missing Google credential"}), 400
+
+    client_id = current_app.config.get("GOOGLE_CLIENT_ID")
+
+    try:
+        # Decode the Google ID token header to get the key ID
+        header = jose_jwt.get_header(credential)
+        key_id = header.get("kid")
+
+        # Fetch Google's public keys
+        google_keys = requests.get("https://www.googleapis.com/oauth2/v3/certs", timeout=10).json()
+        key = next((k for k in google_keys["keys"] if k["kid"] == key_id), None)
+
+        if not key:
+            return jsonify({"error": "Invalid Google token"}), 401
+
+        # Verify the token
+        claims = jose_jwt.decode(credential, key)
+        claims.validate()
+
+        # Verify audience (our client ID)
+        if claims.get("aud") != client_id:
+            return jsonify({"error": "Invalid audience"}), 401
+
+        # Verify issuer
+        if claims.get("iss") not in ("accounts.google.com", "https://accounts.google.com"):
+            return jsonify({"error": "Invalid issuer"}), 401
+
+        email = claims.get("email")
+        name = claims.get("name", "")
+        picture = claims.get("picture", "")
+
+        if not email:
+            return jsonify({"error": "No email in Google token"}), 401
+
+    except Exception as e:
+        return jsonify({"error": f"Invalid Google token: {str(e)}"}), 401
+
+    users = mongo.db.users
+    user = users.find_one({"email": email})
+
+    if not user:
+        # Auto-create new user
+        user_data = {
+            "name": name,
+            "email": email,
+            "password": generate_password_hash(secrets.token_hex(32)),
+            "college": "",
+            "game_uid": "",
+            "role": "player",
+            "auth_provider": "google",
+            "avatar": picture,
+        }
+        result = users.insert_one(user_data)
+        user_id = str(result.inserted_id)
+        role = "player"
+    else:
+        user_id = str(user["_id"])
+        role = user.get("role", "player")
+        # Update avatar if not set
+        if not user.get("avatar") and picture:
+            users.update_one({"_id": user["_id"]}, {"$set": {"avatar": picture}})
+
+    token = create_access_token(
+        identity=user_id,
+        additional_claims={"role": role}
+    )
+
+    return jsonify({
+        "message": "Login successful",
+        "token": token
+    })
 
 
 # REGISTER
