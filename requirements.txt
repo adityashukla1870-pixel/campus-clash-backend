@@ -12,3 +12,4 @@ simple-websocket==1.0.0
 gunicorn==21.2.0
 cloudinary
 authlib>=1.2.0
+requests>=2.31.0
