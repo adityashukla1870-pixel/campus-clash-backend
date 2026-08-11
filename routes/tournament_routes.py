@@ -212,7 +212,6 @@ def create_tournament():
 
 # ---------------- GET ALL TOURNAMENTS ----------------
 @tournament.route("/all", methods=["GET"])
-@jwt_required()
 def get_tournaments():
 
     tournaments = []
@@ -243,7 +242,6 @@ def get_tournaments():
 
 # ---------------- SINGLE TOURNAMENT ----------------
 @tournament.route("/<tournament_id>", methods=["GET"])
-@jwt_required()
 def get_tournament(tournament_id):
 
     t = mongo.db.tournaments.find_one({"_id": ObjectId(tournament_id)})
@@ -776,7 +774,6 @@ def report_match(tournament_id):
 
 # ---------------- LEADERBOARD ----------------
 @tournament.route("/leaderboard", methods=["GET"])
-@jwt_required()
 def leaderboard():
 
     completed = mongo.db.tournaments.find({"winner_id": {"$ne": None}})
