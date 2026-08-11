@@ -1,7 +1,8 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, current_app
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_jwt_extended import create_access_token, create_refresh_token, jwt_required, get_jwt_identity
 from bson import ObjectId
+import secrets
 
 auth = Blueprint("auth", __name__)
 mongo = None
@@ -9,6 +10,81 @@ mongo = None
 def init_auth_routes(mongo_instance):
     global mongo
     mongo = mongo_instance
+
+
+# GOOGLE AUTH
+@auth.route("/google", methods=["POST"])
+def google_login():
+    import requests as http_requests
+
+    data = request.json
+    credential = data.get("credential")
+
+    if not credential:
+        return jsonify({"error": "Missing Google credential"}), 400
+
+    client_id = current_app.config.get("GOOGLE_CLIENT_ID")
+
+    try:
+        # Verify token with Google's tokeninfo endpoint
+        resp = http_requests.get(
+            f"https://oauth2.googleapis.com/tokeninfo?id_token={credential}",
+            timeout=10
+        )
+
+        if resp.status_code != 200:
+            return jsonify({"error": "Invalid Google token"}), 401
+
+        token_data = resp.json()
+
+        # Verify audience
+        if token_data.get("aud") != client_id:
+            return jsonify({"error": "Invalid audience"}), 401
+
+        email = token_data.get("email")
+        name = token_data.get("name", "")
+        picture = token_data.get("picture", "")
+
+        if not email:
+            return jsonify({"error": "No email in Google token"}), 401
+
+    except Exception as e:
+        return jsonify({"error": f"Google verification failed: {str(e)}"}), 401
+
+    users = mongo.db.users
+    user = users.find_one({"email": email})
+
+    if not user:
+        # Auto-create new user
+        user_data = {
+            "name": name,
+            "email": email,
+            "password": generate_password_hash(secrets.token_hex(32)),
+            "college": "",
+            "game_uid": "",
+            "role": "player",
+            "auth_provider": "google",
+            "avatar": picture,
+        }
+        result = users.insert_one(user_data)
+        user_id = str(result.inserted_id)
+        role = "player"
+    else:
+        user_id = str(user["_id"])
+        role = user.get("role", "player")
+        # Update avatar if not set
+        if not user.get("avatar") and picture:
+            users.update_one({"_id": user["_id"]}, {"$set": {"avatar": picture}})
+
+    token = create_access_token(
+        identity=user_id,
+        additional_claims={"role": role}
+    )
+
+    return jsonify({
+        "message": "Login successful",
+        "token": token
+    })
 
 
 # REGISTER
