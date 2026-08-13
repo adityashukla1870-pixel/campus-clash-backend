@@ -47,5 +47,9 @@ def get_file(filename):
 def home():
     return "Advanced Campus Clash Backend Running"
 
+@app.route('/api/health')
+def health():
+    return {"status": "online", "provider": "Groq", "models": "GROQ_MODELS"}
+
 if __name__ == "__main__":
     socketio.run(app, debug=True, allow_unsafe_werkzeug=True)
