@@ -151,6 +151,28 @@ def create_tournament():
 
     kill_point_value = data.get("kill_point_value", 1)
 
+    # Prize split — {rank: percent}. Optional; falls back to a 50/30/20
+    # top-3 split inside normalize_tournament_payload if not provided.
+    prize_distribution_raw = data.get("prize_distribution")
+    if prize_distribution_raw:
+        try:
+            prize_distribution = json.loads(prize_distribution_raw)
+        except (TypeError, ValueError):
+            return jsonify({"error": "Invalid prize_distribution format"}), 400
+
+        if not prize_distribution:
+            return jsonify({"error": "prize_distribution cannot be empty"}), 400
+
+        try:
+            total_percent = sum(float(v) for v in prize_distribution.values())
+        except (TypeError, ValueError):
+            return jsonify({"error": "prize_distribution values must be numbers"}), 400
+
+        if round(total_percent, 2) != 100:
+            return jsonify({"error": f"prize_distribution percentages must add up to 100 (got {total_percent})"}), 400
+    else:
+        prize_distribution = None
+
     # ✅ Validation
     if not name or not entry_fee or not prize_pool:
         return jsonify({"error": "Missing required fields"}), 400
@@ -188,6 +210,7 @@ def create_tournament():
         "game": game,
         "entry_fee": entry_fee,
         "prize_pool": prize_pool,
+        "prize_distribution": prize_distribution,
         "max_players": max_players,
         "mode": mode,
         "team_size": team_size,
@@ -223,6 +246,8 @@ def get_tournaments():
             "game": t.get("game"),
             "entry_fee": t.get("entry_fee"),
             "prize_pool": t.get("prize_pool"),
+            "prize_distribution": t.get("prize_distribution"),
+            "prize_breakdown": t.get("prize_breakdown"),
             "players": t.get("players", []),
             "max_players": t.get("max_players", 100),
             "mode": t.get("mode", "solo"),
@@ -255,6 +280,8 @@ def get_tournament(tournament_id):
         "game": t.get("game"),
         "entry_fee": t.get("entry_fee"),
         "prize_pool": t.get("prize_pool"),
+        "prize_distribution": t.get("prize_distribution"),
+        "prize_breakdown": t.get("prize_breakdown"),
         "players": t.get("players", []),
         "max_players": t.get("max_players", 100),
         "mode": t.get("mode", "solo"),

@@ -7,6 +7,36 @@ from typing import Any, Dict, List, Optional
 DEFAULT_POINTS_TABLE = {"1": 10, "2": 6, "3": 5, "4": 4, "5": 3, "6": 2, "7": 2, "8": 1, "9": 1}
 DEFAULT_KILL_POINT = 1
 
+# Default prize split: rank -> % of the total prize pool. Admin can override
+# per-tournament; percentages must add up to 100 (validated at create time).
+DEFAULT_PRIZE_DISTRIBUTION = {"1": 50, "2": 30, "3": 20}
+
+
+def compute_prize_breakdown(prize_pool: int, distribution: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Turn a {rank: percent} distribution into a sorted list of
+    {rank, percent, amount} rows, rounded to whole rupees.
+
+    Any leftover rupees from rounding (e.g. 999 split 3 ways) are added to
+    the #1 prize so the payouts always sum exactly to prize_pool.
+    """
+    if not distribution:
+        distribution = DEFAULT_PRIZE_DISTRIBUTION
+
+    ranks = sorted(distribution.keys(), key=lambda r: int(r))
+    rows = []
+    running_total = 0
+    for rank in ranks:
+        percent = float(distribution[rank])
+        amount = int(round(prize_pool * percent / 100))
+        running_total += amount
+        rows.append({"rank": rank, "percent": percent, "amount": amount})
+
+    leftover = int(prize_pool) - running_total
+    if rows and leftover != 0:
+        rows[0]["amount"] += leftover
+
+    return rows
+
 
 def build_stage_seed_distribution(participants: List[Dict[str, Any]], pod_count: int, strategy: str = "random") -> List[List[Dict[str, Any]]]:
     """Create a seed distribution for a stage using esports-friendly patterns.
@@ -62,11 +92,17 @@ def normalize_tournament_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     points_table = data.get("points_table") or DEFAULT_POINTS_TABLE
     kill_point_value = data.get("kill_point_value", DEFAULT_KILL_POINT)
 
+    prize_pool = int(data.get("prize_pool", 0))
+    prize_distribution = data.get("prize_distribution") or DEFAULT_PRIZE_DISTRIBUTION
+    prize_breakdown = compute_prize_breakdown(prize_pool, prize_distribution)
+
     return {
         "name": data.get("name"),
         "game": data.get("game"),
         "entry_fee": int(data.get("entry_fee", 0)),
-        "prize_pool": int(data.get("prize_pool", 0)),
+        "prize_pool": prize_pool,
+        "prize_distribution": prize_distribution,
+        "prize_breakdown": prize_breakdown,
         "max_players": int(data.get("max_players", 100)),
         "mode": data.get("mode", "solo"),
         "team_size": int(data.get("team_size", 1)),
