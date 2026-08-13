@@ -87,6 +87,23 @@ def build_winner_update(winner: Dict[str, Any], stage_name: Optional[str] = None
     return update_fields
 
 
+def is_registration_open(tournament: Dict[str, Any]) -> bool:
+    """True if participation is still open. Tournaments without a
+    registration_end_time set are treated as always-open (back-compat)."""
+    from datetime import datetime as _dt
+
+    deadline = tournament.get("registration_end_time")
+    if not deadline:
+        return True
+    try:
+        deadline_dt = _dt.fromisoformat(str(deadline).replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if deadline_dt.tzinfo is not None:
+        deadline_dt = deadline_dt.replace(tzinfo=None)
+    return _dt.utcnow() < deadline_dt
+
+
 def normalize_tournament_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize create-tournament payloads so the same schema is used across quick and full formats."""
     points_table = data.get("points_table") or DEFAULT_POINTS_TABLE
@@ -109,6 +126,13 @@ def normalize_tournament_payload(data: Dict[str, Any]) -> Dict[str, Any]:
         "format": data.get("format", "quick"),
         "points_table": points_table,
         "kill_point_value": int(kill_point_value),
+        # Two-timing launch architecture: registration_end_time is when
+        # participation locks; scheduled_time is when the tournament itself
+        # is meant to be played (informational — room release is still a
+        # separate manual admin action).
+        "registration_end_time": data.get("registration_end_time"),
+        "scheduled_time": data.get("scheduled_time"),
+        "grouping_status": "pending",  # pending -> finalized (once groups are launched)
         "status": "upcoming",
         "room_id": None,
         "room_password": None,

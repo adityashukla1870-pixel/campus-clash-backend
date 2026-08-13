@@ -270,7 +270,7 @@ def create_stage(tournament_id):
     mongo.db.tournaments.update_one(
         {"_id": ObjectId(tournament_id)},
         {
-            "$set": {"status": "in_progress"},
+            "$set": {"status": "in_progress", "grouping_status": "finalized"},
             "$push": {
                 "stage_flow": {
                     "stage_id": str(doc["_id"]),
@@ -284,7 +284,166 @@ def create_stage(tournament_id):
         }
     )
 
+    # Only the very first stage represents "you're locked into a group" for
+    # the participant — later stages (playoffs/finals) reshuffle survivors,
+    # which already gets its own "stage concluded" notification elsewhere.
+    if stage_index == 0:
+        notify_group_assignments(tournament_id, doc["_id"], name)
+
     return jsonify(serialize_stage(doc, include_pods=True))
+
+
+def notify_group_assignments(tournament_id, stage_id, stage_name):
+    """Tell every participant which group/pod they landed in for this stage."""
+    pods = list(mongo.db.stage_pods.find({"stage_id": stage_id}))
+    for pod in pods:
+        for participant in pod.get("participants", []):
+            if participant.get("user_id"):
+                create_notification(
+                    mongo,
+                    participant["user_id"],
+                    f"You've been placed in {pod['name']} for {stage_name}. Check My Tournaments for details.",
+                    ntype="group",
+                    tournament_id=str(tournament_id)
+                )
+
+
+# ---------------- CREATE A STAGE WITH ADMIN-PICKED (MANUAL) GROUPS ----------------
+@stage.route("/<tournament_id>/create-manual", methods=["POST"])
+@admin_required
+def create_manual_stage(tournament_id):
+    """Same as /create but the admin hand-picks who goes in which group,
+    instead of random/snake auto-distribution. Only usable for the first
+    stage of a tournament (later stages still use the auto flow)."""
+
+    t = mongo.db.tournaments.find_one({"_id": safe_object_id(tournament_id)})
+    if not t:
+        return jsonify({"error": "Tournament not found"}), 404
+
+    existing = mongo.db.tournament_stages.find_one({"tournament_id": ObjectId(tournament_id)})
+    if existing:
+        return jsonify({"error": "Manual grouping is only available for the first stage"}), 400
+
+    data = request.get_json(silent=True) or {}
+    name = data.get("name")
+    is_final = bool(data.get("is_final", False))
+    advance_count = data.get("advance_count")
+    groups = data.get("groups")  # [[registration_id, ...], [registration_id, ...], ...]
+
+    if not name:
+        return jsonify({"error": "Stage name is required"}), 400
+    if not groups or not isinstance(groups, list) or not any(groups):
+        return jsonify({"error": "At least one non-empty group is required"}), 400
+
+    roster_by_id = get_roster_by_id(tournament_id)
+    if len(roster_by_id) < 2:
+        return jsonify({"error": "Need at least 2 approved participants to start a stage"}), 400
+
+    seen = set()
+    distribution = []
+    for group in groups:
+        pod_participants = []
+        for rid in group or []:
+            if rid not in roster_by_id:
+                return jsonify({"error": f"Registration {rid} is not an approved participant"}), 400
+            if rid in seen:
+                return jsonify({"error": f"{roster_by_id[rid]['name']} was placed in more than one group"}), 400
+            seen.add(rid)
+            pod_participants.append(roster_by_id[rid])
+        distribution.append(pod_participants)
+
+    unassigned = [v["name"] for k, v in roster_by_id.items() if k not in seen]
+    if unassigned:
+        return jsonify({"error": f"These teams aren't placed in any group yet: {', '.join(unassigned)}"}), 400
+
+    doc = {
+        "tournament_id": ObjectId(tournament_id),
+        "stage_index": 0,
+        "name": name,
+        "is_final": is_final,
+        "advance_count": int(advance_count) if advance_count else None,
+        "status": "active",
+        "created_at": datetime.utcnow()
+    }
+    result = mongo.db.tournament_stages.insert_one(doc)
+    doc["_id"] = result.inserted_id
+
+    letters = "ABCDEFGHIJKLMNOP"
+    for i, pod_participants in enumerate(distribution):
+        if not pod_participants:
+            continue
+        pod_doc = {
+            "stage_id": doc["_id"],
+            "tournament_id": ObjectId(tournament_id),
+            "pod_index": i,
+            "name": f"Group {letters[i] if i < len(letters) else i+1}" if len(distribution) > 1 else name,
+            "participants": pod_participants,
+            "status": "active",
+            "final_standings": None,
+            "created_at": datetime.utcnow()
+        }
+        mongo.db.stage_pods.insert_one(pod_doc)
+
+    mongo.db.tournaments.update_one(
+        {"_id": ObjectId(tournament_id)},
+        {
+            "$set": {"status": "in_progress", "grouping_status": "finalized"},
+            "$push": {
+                "stage_flow": {
+                    "stage_id": str(doc["_id"]),
+                    "name": name,
+                    "stage_index": 0,
+                    "is_final": is_final,
+                    "status": "active",
+                    "created_at": datetime.utcnow()
+                }
+            }
+        }
+    )
+
+    notify_group_assignments(tournament_id, doc["_id"], name)
+
+    return jsonify(serialize_stage(doc, include_pods=True))
+
+
+# ---------------- "WHICH GROUP AM I IN?" (for My Tournaments) ----------------
+@stage.route("/tournament/<tournament_id>/my-group", methods=["GET"])
+@jwt_required()
+def my_group(tournament_id):
+    user_id = get_jwt_identity()
+
+    registration = mongo.db.registrations.find_one({
+        "user_id": user_id,
+        "tournament_id": safe_object_id(tournament_id),
+        "payment_status": "approved"
+    })
+    if not registration:
+        return jsonify({"group": None})
+
+    registration_id = str(registration["_id"])
+
+    # Most recent stage first — that's the one the player currently cares about.
+    stages = list(mongo.db.tournament_stages.find(
+        {"tournament_id": safe_object_id(tournament_id)}
+    ).sort("stage_index", -1))
+
+    for s in stages:
+        pod = mongo.db.stage_pods.find_one({
+            "stage_id": s["_id"],
+            "participants.registration_id": registration_id
+        })
+        if pod:
+            return jsonify({
+                "group": {
+                    "stage_name": s["name"],
+                    "stage_status": s.get("status", "active"),
+                    "pod_name": pod["name"],
+                    "pod_id": str(pod["_id"]),
+                    "teammates": [p["name"] for p in pod.get("participants", []) if p["registration_id"] != registration_id]
+                }
+            })
+
+    return jsonify({"group": None})
 
 
 # ---------------- LIST STAGES FOR A TOURNAMENT ----------------

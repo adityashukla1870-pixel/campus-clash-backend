@@ -7,7 +7,7 @@ from utils.code_generator import generate_payment_code
 from utils.cloud_storage import upload_image
 from utils.time_utils import to_utc_iso
 from routes.notification_routes import create_notification
-from utils.tournament_lifecycle import build_winner_update, normalize_tournament_payload
+from utils.tournament_lifecycle import build_winner_update, normalize_tournament_payload, is_registration_open
 from functools import wraps
 import os
 import random
@@ -140,6 +140,11 @@ def create_tournament():
     structure = data.get("structure", "group_playoff")
     seed_strategy = data.get("seed_strategy", "random")
 
+    # Two-timing launch architecture: participation deadline vs. the
+    # tournament's own scheduled date/time.
+    registration_end_time = data.get("registration_end_time") or None
+    scheduled_time = data.get("scheduled_time") or None
+
     points_table_raw = data.get("points_table")
     if points_table_raw:
         try:
@@ -219,6 +224,8 @@ def create_tournament():
         "kill_point_value": kill_point_value,
         "structure": structure,
         "seed_strategy": seed_strategy,
+        "registration_end_time": registration_end_time,
+        "scheduled_time": scheduled_time,
     })
     payload.update({
         "players": [],
@@ -256,6 +263,10 @@ def get_tournaments():
             "format": t.get("format", "quick"),
             "structure": t.get("structure", "group_playoff"),
             "seed_strategy": t.get("seed_strategy", "random"),
+            "registration_end_time": t.get("registration_end_time"),
+            "scheduled_time": t.get("scheduled_time"),
+            "registration_open": is_registration_open(t),
+            "grouping_status": t.get("grouping_status", "pending"),
             "banner_image": t.get("banner_image"),
             "has_bracket": bool(t.get("bracket")),
             "winner_name": t.get("winner_name"),
@@ -290,6 +301,10 @@ def get_tournament(tournament_id):
         "format": t.get("format", "quick"),
         "structure": t.get("structure", "group_playoff"),
         "seed_strategy": t.get("seed_strategy", "random"),
+        "registration_end_time": t.get("registration_end_time"),
+        "scheduled_time": t.get("scheduled_time"),
+        "registration_open": is_registration_open(t),
+        "grouping_status": t.get("grouping_status", "pending"),
         "banner_image": t.get("banner_image"),
         "points_table": t.get("points_table"),
         "kill_point_value": t.get("kill_point_value", 1),
@@ -323,6 +338,12 @@ def register_tournament(tournament_id):
         "user_id": user_id,
         "tournament_id": ObjectId(tournament_id)
     })
+
+    # Registration deadline only blocks brand-new sign-ups — someone who
+    # already has a pending/approved registration can still come back to
+    # this endpoint to fetch their payment code.
+    if not existing and not is_registration_open(t):
+        return jsonify({"error": "Registration for this tournament has closed"}), 400
 
     # agar pehle se code hai aur reject nahi hua, wahi return karo
     if existing and existing.get("payment_status") != "rejected":
@@ -388,6 +409,82 @@ def upload_payment(registration_id):
     )
 
     return jsonify({"message":"Payment proof uploaded"})
+
+
+# ---------------- ADMIN - FINAL PARTICIPANT LIST (after registration closes) ----------------
+@tournament.route("/admin/<tournament_id>/final-participants", methods=["GET"])
+@admin_required
+def final_participants(tournament_id):
+    """Approved roster for a tournament — used by the admin to review the
+    locked-in field before grouping, and to download it as CSV."""
+    t = mongo.db.tournaments.find_one({"_id": safe_object_id(tournament_id)})
+    if not t:
+        return jsonify({"error": "Tournament not found"}), 404
+
+    registrations = list(mongo.db.registrations.find({
+        "tournament_id": ObjectId(tournament_id),
+        "payment_status": "approved"
+    }))
+
+    roster = []
+    for r in registrations:
+        user = mongo.db.users.find_one({"_id": safe_object_id(r.get("user_id"))})
+        roster.append({
+            "registration_id": str(r["_id"]),
+            "user_id": r.get("user_id"),
+            "player_name": user.get("name") if user else "Unknown",
+            "player_email": user.get("email") if user else None,
+            "team_name": r.get("team_name"),
+            "team_members": r.get("team_members", []),
+        })
+
+    return jsonify({
+        "tournament_name": t.get("name"),
+        "registration_open": is_registration_open(t),
+        "registration_end_time": t.get("registration_end_time"),
+        "grouping_status": t.get("grouping_status", "pending"),
+        "count": len(roster),
+        "participants": roster
+    })
+
+
+@tournament.route("/admin/<tournament_id>/final-participants.csv", methods=["GET"])
+@admin_required
+def final_participants_csv(tournament_id):
+    import csv
+    import io
+    from flask import Response
+
+    t = mongo.db.tournaments.find_one({"_id": safe_object_id(tournament_id)})
+    if not t:
+        return jsonify({"error": "Tournament not found"}), 404
+
+    registrations = list(mongo.db.registrations.find({
+        "tournament_id": ObjectId(tournament_id),
+        "payment_status": "approved"
+    }))
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["Registration ID", "Player Name", "Email", "Team Name", "Team Members"])
+
+    for r in registrations:
+        user = mongo.db.users.find_one({"_id": safe_object_id(r.get("user_id"))})
+        members = ", ".join(m.get("name", "") for m in r.get("team_members", []))
+        writer.writerow([
+            str(r["_id"]),
+            user.get("name") if user else "Unknown",
+            user.get("email") if user else "",
+            r.get("team_name") or "",
+            members
+        ])
+
+    filename = f"{(t.get('name') or 'tournament').replace(' ', '_')}_final_list.csv"
+    return Response(
+        buf.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
 
 
 # ---------------- ADMIN - PENDING PAYMENTS ----------------
