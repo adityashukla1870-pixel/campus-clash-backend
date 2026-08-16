@@ -332,7 +332,14 @@ def register_tournament(tournament_id):
     team_members = data.get("team_members", [])
 
     if t.get("mode") == "squad" and not team_name:
-        return jsonify({"error": "Team name is required for this tournament"}), 400
+        # fallback: use first team member's name as team name
+        if team_members and isinstance(team_members, list) and len(team_members) > 0:
+            if isinstance(team_members[0], dict):
+                team_name = team_members[0].get("name")
+            else:
+                team_name = str(team_members[0])
+        else:
+            return jsonify({"error": "Team name is required for this tournament"}), 400
 
     existing = mongo.db.registrations.find_one({
         "user_id": user_id,
@@ -527,6 +534,17 @@ def approve_payment(registration_id):
 
     if not reg:
         return jsonify({"error": "Registration not found"}), 404
+
+    # --- Double-approve prevention ---
+    if reg.get("payment_status") == "approved":
+        return jsonify({"message": "Already approved"})
+
+    # --- max_players cap check ---
+    t = mongo.db.tournaments.find_one({"_id": ObjectId(reg["tournament_id"])})
+    current_players = len(t.get("players", []))
+    max_players = t.get("max_players", 100)
+    if current_players >= max_players:
+        return jsonify({"error": "Tournament is full, maximum players reached"}), 400
 
     mongo.db.registrations.update_one(
         {"_id": ObjectId(registration_id)},

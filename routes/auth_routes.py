@@ -193,7 +193,9 @@ def profile():
 @jwt_required(refresh=True)
 def refresh_token():
     identity = get_jwt_identity()
-    new_token = create_access_token(identity=identity)
+    claims = get_jwt()
+    role = claims.get("role", "user")
+    new_token = create_access_token(identity=identity, additional_claims={"role": role})
     return jsonify({"token": new_token})
 
 
