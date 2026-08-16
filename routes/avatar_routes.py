@@ -149,6 +149,30 @@ def create_avatar():
 
 
 # ---------------------------------------------------------------------------
+# POST /avatars/select — save avatar selection on user document
+# IMPORTANT: This MUST be defined BEFORE /<avatar_id> routes so Flask
+# doesn't match "select" as an avatar_id.
+# ---------------------------------------------------------------------------
+
+@avatars.route("/select", methods=["POST"])
+@jwt_required()
+def select_avatar():
+    user_id = get_jwt_identity()
+    data = request.get_json(silent=True) or {}
+    avatar_id = data.get("avatarId")
+
+    oid = safe_object_id(user_id)
+    if not oid:
+        return jsonify({"error": "invalid user id"}), 400
+
+    mongo.db.users.update_one(
+        {"_id": oid},
+        {"$set": {"avatarId": avatar_id or None}},
+    )
+    return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
 # PATCH /avatars/<id> — update (admin only)
 # ---------------------------------------------------------------------------
 
@@ -202,25 +226,3 @@ def delete_avatar(avatar_id):
     if result.deleted_count == 0:
         return jsonify({"error": "avatar not found"}), 404
     return jsonify({"message": "deleted"})
-
-
-# ---------------------------------------------------------------------------
-# POST /avatars/select — save avatar selection on user document
-# ---------------------------------------------------------------------------
-
-@avatars.route("/select", methods=["POST"])
-@jwt_required()
-def select_avatar():
-    user_id = get_jwt_identity()
-    data = request.get_json(silent=True) or {}
-    avatar_id = data.get("avatarId")
-
-    oid = safe_object_id(user_id)
-    if not oid:
-        return jsonify({"error": "invalid user id"}), 400
-
-    mongo.db.users.update_one(
-        {"_id": oid},
-        {"$set": {"avatarId": avatar_id or None}},
-    )
-    return jsonify({"ok": True})
