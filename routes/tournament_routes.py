@@ -935,6 +935,7 @@ def leaderboard():
             "user_id": user_id,
             "name": user.get("name") if user else "Unknown",
             "college": user.get("college") if user else None,
+            "avatarId": user.get("avatarId") if user else None,
             "wins": entry["wins"],
             "prize_won": entry["prize_won"],
             "tournaments": entry["tournaments"]

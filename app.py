@@ -10,6 +10,7 @@ from routes.tournament_routes import tournament, init_tournament_routes
 from routes.notification_routes import notification, init_notification_routes
 from routes.chat_routes import chat, init_chat_routes
 from routes.stage_routes import stage, init_stage_routes
+from routes.avatar_routes import avatars, init_avatar_routes
 from chat_events import register_chat_events
 from flask import send_from_directory
 
@@ -30,6 +31,7 @@ init_tournament_routes(mongo)
 init_notification_routes(mongo)
 init_chat_routes(mongo)
 init_stage_routes(mongo)
+init_avatar_routes(mongo)
 register_chat_events(socketio, mongo)
 
 # Register blueprints
@@ -38,6 +40,7 @@ app.register_blueprint(tournament, url_prefix="/tournament")
 app.register_blueprint(notification, url_prefix="/notifications")
 app.register_blueprint(chat, url_prefix="/chat")
 app.register_blueprint(stage, url_prefix="/stages")
+app.register_blueprint(avatars, url_prefix="/avatars")
 
 @app.route('/uploads/<path:filename>')
 def get_file(filename):
