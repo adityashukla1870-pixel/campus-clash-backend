@@ -348,6 +348,12 @@ def register_tournament(tournament_id):
         if not team_leader.get("name") or not team_leader.get("contact") or not team_leader.get("game_uid"):
             return jsonify({"error": "Team leader name, game UID and contact number are required"}), 400
 
+        if not isinstance(team_members, list) or len(team_members) == 0:
+            return jsonify({"error": "Teammate details are required"}), 400
+        for m in team_members:
+            if not isinstance(m, dict) or not m.get("name") or not m.get("game_uid"):
+                return jsonify({"error": "Name and game UID are required for every teammate"}), 400
+
     existing = mongo.db.registrations.find_one({
         "user_id": user_id,
         "tournament_id": ObjectId(tournament_id)
@@ -544,6 +550,36 @@ def pending_payments():
         del p["tournament_id_raw"]
 
     return jsonify(pending)
+
+
+# ---------------- ADMIN - APPROVED PAYMENTS (persistent record) ----------------
+@tournament.route("/admin/approved-payments", methods=["GET"])
+@admin_required
+def approved_payments():
+    """Everything the admin has already approved, across all tournaments.
+    Kept separate from pending-payments so approved registrations (and all
+    the team/leader data submitted at registration) stay visible and don't
+    just vanish from the admin panel once acted on."""
+
+    approved = list(mongo.db.registrations.find({
+        "payment_status": "approved"
+    }).sort("_id", -1))
+
+    for p in approved:
+        p["_id"] = str(p["_id"])
+        p["tournament_id_raw"] = p["tournament_id"]
+        p["tournament_id"] = str(p["tournament_id"])
+
+        user = mongo.db.users.find_one({"_id": safe_object_id(p.get("user_id"))})
+        p["player_name"] = user.get("name") if user else "Unknown"
+        p["player_email"] = user.get("email") if user else None
+
+        t = mongo.db.tournaments.find_one({"_id": p["tournament_id_raw"]})
+        p["tournament_name"] = t.get("name") if t else "Unknown Tournament"
+        p["entry_fee"] = t.get("entry_fee") if t else None
+        del p["tournament_id_raw"]
+
+    return jsonify(approved)
 
 
 # ---------------- ADMIN - APPROVE PAYMENT ----------------
