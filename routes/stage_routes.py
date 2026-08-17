@@ -70,7 +70,8 @@ def get_roster_by_id(tournament_id):
             "registration_id": str(r["_id"]),
             "user_id": r.get("user_id"),
             "name": display_name,
-            "team_members": r.get("team_members", [])
+            "team_members": r.get("team_members", []),
+            "team_leader": r.get("team_leader")
         }
     return roster
 
@@ -93,6 +94,7 @@ def compute_pod_standings(pod_doc):
             "user_id": p.get("user_id"),
             "name": p["name"],
             "team_members": p.get("team_members", []),
+            "team_leader": p.get("team_leader"),
             "matches_played": 0,
             "total_kills": 0,
             "total_points": 0,
@@ -230,7 +232,8 @@ def create_stage(tournament_id):
                 "registration_id": p["registration_id"],
                 "user_id": p.get("user_id"),
                 "name": p["name"],
-                "team_members": base.get("team_members", [])
+                "team_members": base.get("team_members", []),
+                "team_leader": base.get("team_leader")
             })
 
         if len(enriched) < 2:

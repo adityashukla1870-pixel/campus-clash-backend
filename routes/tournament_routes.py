@@ -330,16 +330,23 @@ def register_tournament(tournament_id):
     data = request.get_json(silent=True) or {}
     team_name = data.get("team_name")
     team_members = data.get("team_members", [])
+    team_leader = data.get("team_leader") or {}
+    if not isinstance(team_leader, dict):
+        team_leader = {}
 
-    if t.get("mode") == "squad" and not team_name:
-        # fallback: use first team member's name as team name
-        if team_members and isinstance(team_members, list) and len(team_members) > 0:
-            if isinstance(team_members[0], dict):
-                team_name = team_members[0].get("name")
+    if t.get("mode") == "squad":
+        if not team_name:
+            # fallback: use first team member's name as team name
+            if team_members and isinstance(team_members, list) and len(team_members) > 0:
+                if isinstance(team_members[0], dict):
+                    team_name = team_members[0].get("name")
+                else:
+                    team_name = str(team_members[0])
             else:
-                team_name = str(team_members[0])
-        else:
-            return jsonify({"error": "Team name is required for this tournament"}), 400
+                return jsonify({"error": "Team name is required for this tournament"}), 400
+
+        if not team_leader.get("name") or not team_leader.get("contact"):
+            return jsonify({"error": "Team leader name and contact number are required"}), 400
 
     existing = mongo.db.registrations.find_one({
         "user_id": user_id,
@@ -369,7 +376,12 @@ def register_tournament(tournament_id):
         "utr": None,
         "screenshot": None,
         "team_name": team_name,
-        "team_members": team_members
+        "team_members": team_members,
+        "team_leader": {
+            "name": team_leader.get("name"),
+            "game_uid": team_leader.get("game_uid"),
+            "contact": team_leader.get("contact")
+        } if t.get("mode") == "squad" else None
     }
 
     if existing:
@@ -442,6 +454,7 @@ def final_participants(tournament_id):
             "player_name": user.get("name") if user else "Unknown",
             "player_email": user.get("email") if user else None,
             "team_name": r.get("team_name"),
+            "team_leader": r.get("team_leader"),
             "team_members": r.get("team_members", []),
         })
 
@@ -473,16 +486,24 @@ def final_participants_csv(tournament_id):
 
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["Registration ID", "Player Name", "Email", "Team Name", "Team Members"])
+    writer.writerow([
+        "Registration ID", "Player Name", "Email", "Team Name",
+        "Team Leader Name", "Team Leader UID", "Team Leader Contact",
+        "Team Members"
+    ])
 
     for r in registrations:
         user = mongo.db.users.find_one({"_id": safe_object_id(r.get("user_id"))})
         members = ", ".join(m.get("name", "") for m in r.get("team_members", []))
+        leader = r.get("team_leader") or {}
         writer.writerow([
             str(r["_id"]),
             user.get("name") if user else "Unknown",
             user.get("email") if user else "",
             r.get("team_name") or "",
+            leader.get("name") or "",
+            leader.get("game_uid") or "",
+            leader.get("contact") or "",
             members
         ])
 
