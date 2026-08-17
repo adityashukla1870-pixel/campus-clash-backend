@@ -6,7 +6,7 @@ from datetime import datetime
 from functools import wraps
 
 from routes.notification_routes import create_notification
-from utils.tournament_lifecycle import build_stage_seed_distribution, build_winner_update
+from utils.tournament_lifecycle import build_stage_seed_distribution, build_winner_update, is_registration_open
 
 stage = Blueprint("stage", __name__)
 mongo = None
@@ -70,8 +70,7 @@ def get_roster_by_id(tournament_id):
             "registration_id": str(r["_id"]),
             "user_id": r.get("user_id"),
             "name": display_name,
-            "team_members": r.get("team_members", []),
-            "team_leader": r.get("team_leader")
+            "team_members": r.get("team_members", [])
         }
     return roster
 
@@ -94,7 +93,6 @@ def compute_pod_standings(pod_doc):
             "user_id": p.get("user_id"),
             "name": p["name"],
             "team_members": p.get("team_members", []),
-            "team_leader": p.get("team_leader"),
             "matches_played": 0,
             "total_kills": 0,
             "total_points": 0,
@@ -206,6 +204,8 @@ def create_stage(tournament_id):
     roster_by_id = get_roster_by_id(tournament_id)
 
     if not existing:
+        if is_registration_open(t):
+            return jsonify({"error": "Registration is still open — groups can be launched only after registration closes"}), 400
         participants = list(roster_by_id.values())
         if len(participants) < 2:
             return jsonify({"error": "Need at least 2 approved participants to start a stage"}), 400
@@ -232,8 +232,7 @@ def create_stage(tournament_id):
                 "registration_id": p["registration_id"],
                 "user_id": p.get("user_id"),
                 "name": p["name"],
-                "team_members": base.get("team_members", []),
-                "team_leader": base.get("team_leader")
+                "team_members": base.get("team_members", [])
             })
 
         if len(enriched) < 2:
@@ -326,6 +325,9 @@ def create_manual_stage(tournament_id):
     existing = mongo.db.tournament_stages.find_one({"tournament_id": ObjectId(tournament_id)})
     if existing:
         return jsonify({"error": "Manual grouping is only available for the first stage"}), 400
+
+    if is_registration_open(t):
+        return jsonify({"error": "Registration is still open — groups can be launched only after registration closes"}), 400
 
     data = request.get_json(silent=True) or {}
     name = data.get("name")
