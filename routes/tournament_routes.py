@@ -345,8 +345,8 @@ def register_tournament(tournament_id):
             else:
                 return jsonify({"error": "Team name is required for this tournament"}), 400
 
-        if not team_leader.get("name") or not team_leader.get("contact"):
-            return jsonify({"error": "Team leader name and contact number are required"}), 400
+        if not team_leader.get("name") or not team_leader.get("contact") or not team_leader.get("game_uid"):
+            return jsonify({"error": "Team leader name, game UID and contact number are required"}), 400
 
     existing = mongo.db.registrations.find_one({
         "user_id": user_id,
@@ -559,13 +559,6 @@ def approve_payment(registration_id):
     # --- Double-approve prevention ---
     if reg.get("payment_status") == "approved":
         return jsonify({"message": "Already approved"})
-
-    # --- max_players cap check ---
-    t = mongo.db.tournaments.find_one({"_id": ObjectId(reg["tournament_id"])})
-    current_players = len(t.get("players", []))
-    max_players = t.get("max_players", 100)
-    if current_players >= max_players:
-        return jsonify({"error": "Tournament is full, maximum players reached"}), 400
 
     mongo.db.registrations.update_one(
         {"_id": ObjectId(registration_id)},
