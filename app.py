@@ -19,7 +19,11 @@ from flask import send_from_directory
 app = Flask(__name__)
 app.config.from_object(Config)
 
-CORS(app, supports_credentials=True)
+CORS(app, supports_credentials=True, origins=[
+    "https://campus-clash-og.vercel.app",
+    "http://localhost:5173",
+    "http://localhost:3000",
+], allow_headers=["Content-Type", "Authorization"], methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
 
 mongo = PyMongo(app)
 jwt = JWTManager(app)
