@@ -8,9 +8,22 @@ from utils.cloud_storage import upload_image
 from utils.time_utils import to_utc_iso
 from routes.notification_routes import create_notification
 from utils.tournament_lifecycle import build_winner_update, normalize_tournament_payload, is_registration_open
+from datetime import datetime as _dt
 from functools import wraps
 import os
 import random
+
+
+def _format_deadline_iso(deadline):
+    """Ensure deadline ISO string has UTC Z suffix for frontend compatibility."""
+    if not deadline:
+        return None
+    if deadline.endswith("Z") or "+00:00" in deadline:
+        return deadline
+    if "T" in deadline:
+        return deadline + "Z"
+    return deadline
+
 
 tournament = Blueprint("tournament", __name__)
 mongo = None
@@ -263,8 +276,8 @@ def get_tournaments():
             "format": t.get("format", "quick"),
             "structure": t.get("structure", "group_playoff"),
             "seed_strategy": t.get("seed_strategy", "random"),
-            "registration_end_time": t.get("registration_end_time"),
-            "scheduled_time": t.get("scheduled_time"),
+            "registration_end_time": _format_deadline_iso(t.get("registration_end_time")),
+            "scheduled_time": _format_deadline_iso(t.get("scheduled_time")),
             "registration_open": is_registration_open(t),
             "grouping_status": t.get("grouping_status", "pending"),
             "banner_image": t.get("banner_image"),
@@ -301,8 +314,8 @@ def get_tournament(tournament_id):
         "format": t.get("format", "quick"),
         "structure": t.get("structure", "group_playoff"),
         "seed_strategy": t.get("seed_strategy", "random"),
-        "registration_end_time": t.get("registration_end_time"),
-        "scheduled_time": t.get("scheduled_time"),
+        "registration_end_time": _format_deadline_iso(t.get("registration_end_time")),
+        "scheduled_time": _format_deadline_iso(t.get("scheduled_time")),
         "registration_open": is_registration_open(t),
         "grouping_status": t.get("grouping_status", "pending"),
         "banner_image": t.get("banner_image"),
@@ -993,6 +1006,46 @@ def leaderboard():
     leaderboard_data.sort(key=lambda x: (-x["wins"], -x["prize_won"]))
 
     return jsonify(leaderboard_data)
+
+# ---------------- UPDATE TOURNAMENT ----------------
+@tournament.route("/<tournament_id>", methods=["PATCH"])
+@admin_required
+def update_tournament(tournament_id):
+
+    t = mongo.db.tournaments.find_one({"_id": ObjectId(tournament_id)})
+    if not t:
+        return jsonify({"error": "Tournament not found"}), 404
+
+    data = request.get_json(silent=True) or request.form
+
+    update_fields = {}
+
+    if data:
+        if "name" in data and data["name"]:
+            update_fields["name"] = data["name"]
+        if "game" in data and data["game"]:
+            update_fields["game"] = data["game"]
+        if "registration_end_time" in data:
+            update_fields["registration_end_time"] = data["registration_end_time"]
+        if "scheduled_time" in data:
+            update_fields["scheduled_time"] = data["scheduled_time"]
+
+    if not update_fields:
+        return jsonify({"error": "No fields to update"}), 400
+
+    mongo.db.tournaments.update_one(
+        {"_id": ObjectId(tournament_id)},
+        {"$set": update_fields}
+    )
+
+    # Return updated tournament data
+    updated = mongo.db.tournaments.find_one({"_id": ObjectId(tournament_id)})
+    return jsonify({
+        "message": "Tournament updated successfully",
+        "registration_end_time": _format_deadline_iso(updated.get("registration_end_time")),
+        "scheduled_time": _format_deadline_iso(updated.get("scheduled_time")),
+        "registration_open": is_registration_open(updated)
+    })
 
 
 
