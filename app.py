@@ -13,7 +13,7 @@ from routes.stage_routes import stage, init_stage_routes
 from routes.avatar_routes import avatars, init_avatar_routes
 from routes.player_stats_routes import player_stats, init_player_stats_routes
 from chat_events import register_chat_events
-from flask import send_from_directory
+from flask import send_from_directory, request, make_response
 
 
 
@@ -48,6 +48,38 @@ app.register_blueprint(chat, url_prefix="/chat")
 app.register_blueprint(stage, url_prefix="/stages")
 app.register_blueprint(avatars, url_prefix="/avatars")
 app.register_blueprint(player_stats, url_prefix="/stats")
+
+@app.before_request
+def handle_options_preflight():
+    if request.method == "OPTIONS":
+        response = make_response()
+        origin = request.headers.get("Origin")
+        allowed_origins = [
+            "https://campus-clash-og.vercel.app",
+            "http://localhost:5173",
+            "http://localhost:3000",
+        ]
+        if origin in allowed_origins:
+            response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Max-Age"] = "3600"
+        response.status_code = 200
+        return response
+
+@app.after_request
+def add_cors_headers(response):
+    origin = request.headers.get("Origin")
+    allowed_origins = [
+        "https://campus-clash-og.vercel.app",
+        "http://localhost:5173",
+        "http://localhost:3000",
+    ]
+    if origin in allowed_origins:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response
 
 @app.route('/uploads/<path:filename>')
 def get_file(filename):
