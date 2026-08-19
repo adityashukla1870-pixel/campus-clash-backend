@@ -7,7 +7,6 @@ from functools import wraps
 
 from routes.notification_routes import create_notification
 from utils.tournament_lifecycle import build_stage_seed_distribution, build_winner_update
-from routes.player_stats_routes import upsert_player_stats, upsert_global_wins
 
 stage = Blueprint("stage", __name__)
 mongo = None
@@ -205,6 +204,8 @@ def create_stage(tournament_id):
     roster_by_id = get_roster_by_id(tournament_id)
 
     if not existing:
+        if is_registration_open(t):
+            return jsonify({"error": "Registration is still open — groups can be launched only after registration closes"}), 400
         participants = list(roster_by_id.values())
         if len(participants) < 2:
             return jsonify({"error": "Need at least 2 approved participants to start a stage"}), 400
@@ -324,6 +325,9 @@ def create_manual_stage(tournament_id):
     existing = mongo.db.tournament_stages.find_one({"tournament_id": ObjectId(tournament_id)})
     if existing:
         return jsonify({"error": "Manual grouping is only available for the first stage"}), 400
+
+    if is_registration_open(t):
+        return jsonify({"error": "Registration is still open — groups can be launched only after registration closes"}), 400
 
     data = request.get_json(silent=True) or {}
     name = data.get("name")

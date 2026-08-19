@@ -1,6 +1,8 @@
 import re
 from datetime import datetime
 
+from utils.time_utils import to_utc_iso
+
 DEFAULT_CHANNELS = [
     {"key": "general", "name": "general", "icon": "\U0001F4AC",
      "description": "Talk strategy, find teammates, hang out", "type": "text", "admin_only_post": False},
@@ -51,8 +53,8 @@ def serialize_message(m):
         "lfg": m.get("lfg"),
         "pinned": m.get("pinned", False),
         "deleted": m.get("deleted", False),
-        "edited_at": m["edited_at"].isoformat() if m.get("edited_at") else None,
-        "created_at": m["created_at"].isoformat() if m.get("created_at") else None
+        "edited_at": to_utc_iso(m.get("edited_at")),
+        "created_at": to_utc_iso(m.get("created_at"))
     }
 
 

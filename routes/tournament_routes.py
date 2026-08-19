@@ -9,9 +9,22 @@ from utils.time_utils import to_utc_iso
 from routes.notification_routes import create_notification
 from routes.player_stats_routes import upsert_player_stats, upsert_global_wins
 from utils.tournament_lifecycle import build_winner_update, normalize_tournament_payload, is_registration_open
+from datetime import datetime as _dt
 from functools import wraps
 import os
 import random
+
+
+def _format_deadline_iso(deadline):
+    """Ensure deadline ISO string has UTC Z suffix for frontend compatibility."""
+    if not deadline:
+        return None
+    if deadline.endswith("Z") or "+00:00" in deadline:
+        return deadline
+    if "T" in deadline:
+        return deadline + "Z"
+    return deadline
+
 
 tournament = Blueprint("tournament", __name__)
 mongo = None
@@ -264,8 +277,8 @@ def get_tournaments():
             "format": t.get("format", "quick"),
             "structure": t.get("structure", "group_playoff"),
             "seed_strategy": t.get("seed_strategy", "random"),
-            "registration_end_time": t.get("registration_end_time"),
-            "scheduled_time": t.get("scheduled_time"),
+            "registration_end_time": _format_deadline_iso(t.get("registration_end_time")),
+            "scheduled_time": _format_deadline_iso(t.get("scheduled_time")),
             "registration_open": is_registration_open(t),
             "grouping_status": t.get("grouping_status", "pending"),
             "banner_image": t.get("banner_image"),
@@ -302,8 +315,8 @@ def get_tournament(tournament_id):
         "format": t.get("format", "quick"),
         "structure": t.get("structure", "group_playoff"),
         "seed_strategy": t.get("seed_strategy", "random"),
-        "registration_end_time": t.get("registration_end_time"),
-        "scheduled_time": t.get("scheduled_time"),
+        "registration_end_time": _format_deadline_iso(t.get("registration_end_time")),
+        "scheduled_time": _format_deadline_iso(t.get("scheduled_time")),
         "registration_open": is_registration_open(t),
         "grouping_status": t.get("grouping_status", "pending"),
         "banner_image": t.get("banner_image"),
@@ -331,16 +344,29 @@ def register_tournament(tournament_id):
     data = request.get_json(silent=True) or {}
     team_name = data.get("team_name")
     team_members = data.get("team_members", [])
+    team_leader = data.get("team_leader") or {}
+    if not isinstance(team_leader, dict):
+        team_leader = {}
 
-    if t.get("mode") == "squad" and not team_name:
-        # fallback: use first team member's name as team name
-        if team_members and isinstance(team_members, list) and len(team_members) > 0:
-            if isinstance(team_members[0], dict):
-                team_name = team_members[0].get("name")
+    if t.get("mode") == "squad":
+        if not team_name:
+            # fallback: use first team member's name as team name
+            if team_members and isinstance(team_members, list) and len(team_members) > 0:
+                if isinstance(team_members[0], dict):
+                    team_name = team_members[0].get("name")
+                else:
+                    team_name = str(team_members[0])
             else:
-                team_name = str(team_members[0])
-        else:
-            return jsonify({"error": "Team name is required for this tournament"}), 400
+                return jsonify({"error": "Team name is required for this tournament"}), 400
+
+        if not team_leader.get("name") or not team_leader.get("contact") or not team_leader.get("game_uid"):
+            return jsonify({"error": "Team leader name, game UID and contact number are required"}), 400
+
+        if not isinstance(team_members, list) or len(team_members) == 0:
+            return jsonify({"error": "Teammate details are required"}), 400
+        for m in team_members:
+            if not isinstance(m, dict) or not m.get("name") or not m.get("game_uid"):
+                return jsonify({"error": "Name and game UID are required for every teammate"}), 400
 
     existing = mongo.db.registrations.find_one({
         "user_id": user_id,
@@ -405,7 +431,12 @@ def register_tournament(tournament_id):
         "utr": None,
         "screenshot": None,
         "team_name": team_name,
-        "team_members": team_members
+        "team_members": team_members,
+        "team_leader": {
+            "name": team_leader.get("name"),
+            "game_uid": team_leader.get("game_uid"),
+            "contact": team_leader.get("contact")
+        } if t.get("mode") == "squad" else None
     }
 
     if existing:
@@ -478,6 +509,7 @@ def final_participants(tournament_id):
             "player_name": user.get("name") if user else "Unknown",
             "player_email": user.get("email") if user else None,
             "team_name": r.get("team_name"),
+            "team_leader": r.get("team_leader"),
             "team_members": r.get("team_members", []),
         })
 
@@ -509,16 +541,24 @@ def final_participants_csv(tournament_id):
 
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["Registration ID", "Player Name", "Email", "Team Name", "Team Members"])
+    writer.writerow([
+        "Registration ID", "Player Name", "Email", "Team Name",
+        "Team Leader Name", "Team Leader UID", "Team Leader Contact",
+        "Team Members"
+    ])
 
     for r in registrations:
         user = mongo.db.users.find_one({"_id": safe_object_id(r.get("user_id"))})
         members = ", ".join(m.get("name", "") for m in r.get("team_members", []))
+        leader = r.get("team_leader") or {}
         writer.writerow([
             str(r["_id"]),
             user.get("name") if user else "Unknown",
             user.get("email") if user else "",
             r.get("team_name") or "",
+            leader.get("name") or "",
+            leader.get("game_uid") or "",
+            leader.get("contact") or "",
             members
         ])
 
@@ -561,6 +601,36 @@ def pending_payments():
     return jsonify(pending)
 
 
+# ---------------- ADMIN - APPROVED PAYMENTS (persistent record) ----------------
+@tournament.route("/admin/approved-payments", methods=["GET"])
+@admin_required
+def approved_payments():
+    """Everything the admin has already approved, across all tournaments.
+    Kept separate from pending-payments so approved registrations (and all
+    the team/leader data submitted at registration) stay visible and don't
+    just vanish from the admin panel once acted on."""
+
+    approved = list(mongo.db.registrations.find({
+        "payment_status": "approved"
+    }).sort("_id", -1))
+
+    for p in approved:
+        p["_id"] = str(p["_id"])
+        p["tournament_id_raw"] = p["tournament_id"]
+        p["tournament_id"] = str(p["tournament_id"])
+
+        user = mongo.db.users.find_one({"_id": safe_object_id(p.get("user_id"))})
+        p["player_name"] = user.get("name") if user else "Unknown"
+        p["player_email"] = user.get("email") if user else None
+
+        t = mongo.db.tournaments.find_one({"_id": p["tournament_id_raw"]})
+        p["tournament_name"] = t.get("name") if t else "Unknown Tournament"
+        p["entry_fee"] = t.get("entry_fee") if t else None
+        del p["tournament_id_raw"]
+
+    return jsonify(approved)
+
+
 # ---------------- ADMIN - APPROVE PAYMENT ----------------
 @tournament.route("/admin/approve/<registration_id>", methods=["POST"])
 @admin_required
@@ -574,13 +644,6 @@ def approve_payment(registration_id):
     # --- Double-approve prevention ---
     if reg.get("payment_status") == "approved":
         return jsonify({"message": "Already approved"})
-
-    # --- max_players cap check ---
-    t = mongo.db.tournaments.find_one({"_id": ObjectId(reg["tournament_id"])})
-    current_players = len(t.get("players", []))
-    max_players = t.get("max_players", 100)
-    if current_players >= max_players:
-        return jsonify({"error": "Tournament is full, maximum players reached"}), 400
 
     mongo.db.registrations.update_one(
         {"_id": ObjectId(registration_id)},
@@ -1027,6 +1090,46 @@ def leaderboard():
     leaderboard_data.sort(key=lambda x: (-x["wins"], -x["prize_won"]))
 
     return jsonify(leaderboard_data)
+
+# ---------------- UPDATE TOURNAMENT ----------------
+@tournament.route("/<tournament_id>", methods=["PATCH"])
+@admin_required
+def update_tournament(tournament_id):
+
+    t = mongo.db.tournaments.find_one({"_id": ObjectId(tournament_id)})
+    if not t:
+        return jsonify({"error": "Tournament not found"}), 404
+
+    data = request.get_json(silent=True) or request.form
+
+    update_fields = {}
+
+    if data:
+        if "name" in data and data["name"]:
+            update_fields["name"] = data["name"]
+        if "game" in data and data["game"]:
+            update_fields["game"] = data["game"]
+        if "registration_end_time" in data:
+            update_fields["registration_end_time"] = data["registration_end_time"]
+        if "scheduled_time" in data:
+            update_fields["scheduled_time"] = data["scheduled_time"]
+
+    if not update_fields:
+        return jsonify({"error": "No fields to update"}), 400
+
+    mongo.db.tournaments.update_one(
+        {"_id": ObjectId(tournament_id)},
+        {"$set": update_fields}
+    )
+
+    # Return updated tournament data
+    updated = mongo.db.tournaments.find_one({"_id": ObjectId(tournament_id)})
+    return jsonify({
+        "message": "Tournament updated successfully",
+        "registration_end_time": _format_deadline_iso(updated.get("registration_end_time")),
+        "scheduled_time": _format_deadline_iso(updated.get("scheduled_time")),
+        "registration_open": is_registration_open(updated)
+    })
 
 
 
