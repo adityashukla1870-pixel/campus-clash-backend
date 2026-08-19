@@ -46,10 +46,25 @@ def upsert_player_stats(
 
 
 def upsert_global_wins(user_id, delta):
-    """Atomically update a user's global tournament win count."""
+    """Atomically update a user's global tournament win count in both users and player_stats."""
     mongo.db.users.update_one(
         {"_id": ObjectId(user_id)},
         {"$inc": {"tournaments_won": delta}}
+    )
+    # Also update player_stats with game="GLOBAL" so the global leaderboard works
+    mongo.db.player_stats.update_one(
+        {"user_id": user_id, "game": "GLOBAL"},
+        {
+            "$inc": {"tournaments_won": delta},
+            "$setOnInsert": {
+                "user_id": user_id,
+                "game": "GLOBAL",
+                "username": "",
+                "total_kills": 0,
+                "tournaments_played": 0,
+            }
+        },
+        upsert=True
     )
 
 # ---- PLAYER STATS ----

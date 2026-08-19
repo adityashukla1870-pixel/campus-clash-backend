@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+from bson import ObjectId
 
 
 def normalize_game(game: str) -> str:
@@ -163,10 +164,18 @@ def increment_tournaments_played(mongo, user_id: str, game: str) -> Dict[str, An
 
     doc = stats_col.find_one({"user_id": user_id, "game": game_norm})
     if not doc:
-        # Create new stats doc
+        # Look up username from users collection
+        username = ""
+        try:
+            user = mongo.db.users.find_one({"_id": ObjectId(user_id)})
+            if user:
+                username = user.get("username", "")
+        except Exception:
+            pass
+
         new_doc = {
             "user_id": user_id,
-            "username": "",
+            "username": username,
             "game": game_norm,
             "total_kills": 0,
             "tournaments_played": 1,
@@ -275,16 +284,27 @@ def get_player_stats(mongo, user_id: str, game: str = None) -> Dict[str, Any]:
 def get_global_leaderboard(mongo) -> List[Dict[str, Any]]:
     """Get global leaderboard sorted by tournament wins (desc).
 
-    Returns list of {user_id, username, tournaments_won} sorted by wins desc.
+    Returns list of {user_id, username, name, college, avatarId, tournaments_won} sorted by wins desc.
     """
     stats_col = mongo.db.player_stats
+    users_col = mongo.db.users
     cursor = stats_col.find({"game": "GLOBAL"}).sort("tournaments_won", -1)
     results = list(cursor)
     normalized = []
     for doc in results:
+        uid = doc.get("user_id")
+        user = None
+        if uid:
+            try:
+                user = users_col.find_one({"_id": ObjectId(uid)})
+            except Exception:
+                user = users_col.find_one({"_id": uid})
         normalized.append({
-            "user_id": doc.get("user_id"),
+            "user_id": uid,
             "username": doc.get("username", ""),
+            "name": user.get("name", "") if user else "",
+            "college": user.get("college", "") if user else "",
+            "avatarId": user.get("avatarId") if user else None,
             "tournaments_won": doc.get("tournaments_won", 0),
         })
     return sorted(normalized, key=lambda x: (-x["tournaments_won"], x["username"]))
@@ -293,13 +313,24 @@ def get_global_leaderboard(mongo) -> List[Dict[str, Any]]:
 def get_bgmi_leaderboard(mongo) -> List[Dict[str, Any]]:
     """Get BGMI leaderboard sorted by total kills (desc)."""
     stats_col = mongo.db.player_stats
+    users_col = mongo.db.users
     cursor = stats_col.find({"game": "BGMI"}).sort("total_kills", -1)
     results = list(cursor)
     normalized = []
     for doc in results:
+        uid = doc.get("user_id")
+        user = None
+        if uid:
+            try:
+                user = users_col.find_one({"_id": ObjectId(uid)})
+            except Exception:
+                user = users_col.find_one({"_id": uid})
         normalized.append({
-            "user_id": doc.get("user_id"),
+            "user_id": uid,
             "username": doc.get("username", ""),
+            "name": user.get("name", "") if user else "",
+            "college": user.get("college", "") if user else "",
+            "avatarId": user.get("avatarId") if user else None,
             "total_kills": doc.get("total_kills", 0),
             "tournaments_played": doc.get("tournaments_played", 0),
         })
@@ -333,13 +364,24 @@ def _decrement_tournaments_won(mongo, user_id: str, username: str, game: str) ->
 def get_free_fire_leaderboard(mongo) -> List[Dict[str, Any]]:
     """Get Free Fire leaderboard sorted by total kills (desc)."""
     stats_col = mongo.db.player_stats
+    users_col = mongo.db.users
     cursor = stats_col.find({"game": "FREE_FIRE"}).sort("total_kills", -1)
     results = list(cursor)
     normalized = []
     for doc in results:
+        uid = doc.get("user_id")
+        user = None
+        if uid:
+            try:
+                user = users_col.find_one({"_id": ObjectId(uid)})
+            except Exception:
+                user = users_col.find_one({"_id": uid})
         normalized.append({
-            "user_id": doc.get("user_id"),
+            "user_id": uid,
             "username": doc.get("username", ""),
+            "name": user.get("name", "") if user else "",
+            "college": user.get("college", "") if user else "",
+            "avatarId": user.get("avatarId") if user else None,
             "total_kills": doc.get("total_kills", 0),
             "tournaments_played": doc.get("tournaments_played", 0),
         })
