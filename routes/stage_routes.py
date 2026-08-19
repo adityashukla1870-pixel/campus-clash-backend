@@ -7,6 +7,7 @@ from functools import wraps
 
 from routes.notification_routes import create_notification
 from utils.tournament_lifecycle import build_stage_seed_distribution, build_winner_update
+from routes.player_stats_routes import upsert_player_stats, upsert_global_wins
 
 stage = Blueprint("stage", __name__)
 mongo = None
@@ -637,6 +638,9 @@ def submit_results(match_id):
 
     name_lookup = {pt["registration_id"]: pt for pt in p.get("participants", [])}
 
+    # Capture previous results for delta computation
+    prev_results = m.get("results", [])
+
     results = []
     for r in raw_results:
         rid = r.get("registration_id")
@@ -644,9 +648,26 @@ def submit_results(match_id):
             continue
         placement = int(r.get("placement", 0))
 
+        participant = name_lookup[rid]
+        registration = mongo.db.registrations.find_one({"_id": safe_object_id(rid)})
+
         raw_players = r.get("players")
         if raw_players:
-            players = [{"name": pl.get("name", ""), "kills": int(pl.get("kills", 0))} for pl in raw_players]
+            players = []
+            for pl in raw_players:
+                pl_name = pl.get("name", "")
+                pl_kills = int(pl.get("kills", 0))
+                # Resolve user_id for this player
+                pl_user_id = None
+                if registration:
+                    if registration.get("user_id") == participant.get("user_id"):
+                        pl_user_id = participant.get("user_id")
+                    else:
+                        for tm in registration.get("team_members", []):
+                            if tm.get("name") == pl_name or tm.get("username") == pl.get("username"):
+                                pl_user_id = tm.get("user_id")
+                                break
+                players.append({"name": pl_name, "kills": pl_kills, "user_id": pl_user_id})
             kills = sum(pl["kills"] for pl in players)
         else:
             players = []
@@ -654,7 +675,7 @@ def submit_results(match_id):
 
         results.append({
             "registration_id": rid,
-            "name": name_lookup[rid]["name"],
+            "name": participant["name"],
             "placement": placement,
             "kills": kills,
             "points": calc_points(placement, kills, points_table, kill_point_value),
@@ -668,6 +689,9 @@ def submit_results(match_id):
         {"$set": {"results": results, "status": "completed", "mvp": mvp}}
     )
 
+    # Compute deltas and update player_stats
+    _apply_kill_deltas(prev_results, results, t.get("game", ""))
+
     for r in results:
         pt = name_lookup.get(r["registration_id"])
         if pt and pt.get("user_id"):
@@ -680,6 +704,36 @@ def submit_results(match_id):
             )
 
     return jsonify({"message": "Results submitted", "results": results, "mvp": mvp})
+
+
+def _apply_kill_deltas(prev_results, new_results, game):
+    """Compute per-user kill deltas between previous and new results,
+    then apply only the delta to player_stats. Re-submitting identical
+    data results in zero deltas (no-op)."""
+    # Build previous kills: {user_id: kills}
+    prev_kills = {}
+    for r in prev_results:
+        for pl in r.get("players", []):
+            uid = pl.get("user_id")
+            if uid:
+                prev_kills[uid] = prev_kills.get(uid, 0) + pl.get("kills", 0)
+
+    # Build new kills: {user_id: kills}
+    new_kills = {}
+    for r in new_results:
+        for pl in r.get("players", []):
+            uid = pl.get("user_id")
+            if uid:
+                new_kills[uid] = new_kills.get(uid, 0) + pl.get("kills", 0)
+
+    # Apply deltas
+    all_user_ids = set(prev_kills.keys()) | set(new_kills.keys())
+    for uid in all_user_ids:
+        old = prev_kills.get(uid, 0)
+        new = new_kills.get(uid, 0)
+        delta = new - old
+        if delta != 0:
+            upsert_player_stats(uid, game, kills_delta=delta)
 
 
 # ---------------- FINALIZE A POD ----------------
@@ -732,6 +786,23 @@ def finalize_stage(stage_id):
 
         if merged:
             champion = merged[0]
+
+            # Track old winner for idempotent win handling
+            t = mongo.db.tournaments.find_one({"_id": s["tournament_id"]})
+            old_winner_id = t.get("winner_id") if t else None
+            new_winner_id = champion.get("user_id")
+            game = t.get("game", "") if t else ""
+
+            if old_winner_id != new_winner_id:
+                if old_winner_id:
+                    upsert_global_wins(old_winner_id, -1)
+                    if game:
+                        upsert_player_stats(old_winner_id, game, tournaments_won_delta=-1)
+                if new_winner_id:
+                    upsert_global_wins(new_winner_id, 1)
+                    if game:
+                        upsert_player_stats(new_winner_id, game, tournaments_won_delta=1)
+
             update_fields = build_winner_update(champion, stage_name=s["name"], source="final_stage")
             mongo.db.tournaments.update_one({"_id": s["tournament_id"]}, {"$set": update_fields})
 
@@ -739,7 +810,7 @@ def finalize_stage(stage_id):
                 for participant in pod.get("participants", []):
                     if participant.get("user_id"):
                         is_champ = participant["registration_id"] == champion["registration_id"]
-                        msg = (f"🏆 Congratulations! Your team won {s['name']}!" if is_champ
+                        msg = (f"Congratulations! Your team won {s['name']}!" if is_champ
                                else f"{s['name']} has concluded. Check the final standings!")
                         create_notification(mongo, participant["user_id"], msg, ntype="winner",
                                              tournament_id=str(s["tournament_id"]))

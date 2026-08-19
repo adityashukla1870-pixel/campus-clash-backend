@@ -3,13 +3,30 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from flask_jwt_extended import create_access_token, create_refresh_token, jwt_required, get_jwt_identity
 from bson import ObjectId
 import secrets
+import re
 
 auth = Blueprint("auth", __name__)
 mongo = None
 
+USERNAME_RE = re.compile(r'^[a-z0-9._-]{3,20}$')
+
+def _normalize_username(raw):
+    return raw.strip().lower()
+
+def _is_valid_username(username):
+    return bool(USERNAME_RE.match(username))
+
 def init_auth_routes(mongo_instance):
     global mongo
     mongo = mongo_instance
+    _ensure_username_index()
+
+
+def _ensure_username_index():
+    try:
+        mongo.db.users.create_index("username", unique=True, sparse=True)
+    except Exception:
+        pass
 
 
 # GOOGLE AUTH
@@ -56,6 +73,15 @@ def google_login():
 
     if not user:
         # Auto-create new user
+        base_username = re.sub(r'[^a-z0-9._-]', '', email.split("@")[0].lower())
+        if len(base_username) < 3:
+            base_username = base_username + "0"
+        username_candidate = base_username
+        counter = 1
+        while users.find_one({"username": username_candidate}):
+            username_candidate = f"{base_username}{counter}"
+            counter += 1
+
         user_data = {
             "name": name,
             "email": email,
@@ -65,6 +91,7 @@ def google_login():
             "role": "player",
             "auth_provider": "google",
             "avatar": picture,
+            "username": username_candidate,
         }
         result = users.insert_one(user_data)
         user_id = str(result.inserted_id)
@@ -87,6 +114,16 @@ def google_login():
     })
 
 
+# CHECK USERNAME AVAILABILITY
+@auth.route("/check-username/<username>", methods=["GET"])
+def check_username(username):
+    normalized = _normalize_username(username)
+    if not _is_valid_username(normalized):
+        return jsonify({"available": False, "error": "Username must be 3-20 characters, lowercase letters, numbers, dots, hyphens, or underscores"}), 400
+    exists = mongo.db.users.find_one({"username": normalized})
+    return jsonify({"available": not exists, "username": normalized})
+
+
 # REGISTER
 @auth.route("/register", methods=["POST"])
 def register():
@@ -98,12 +135,23 @@ def register():
     password = data.get("password")
     college = data.get("college")
     game_uid = data.get("game_uid", "")
+    username_raw = data.get("username")
 
     if not name or not email or not password:
         return jsonify({"error": "Name, email, and password are required"}), 400
 
+    if not username_raw:
+        return jsonify({"error": "Username is required"}), 400
+
+    username = _normalize_username(username_raw)
+    if not _is_valid_username(username):
+        return jsonify({"error": "Username must be 3-20 characters, lowercase letters, numbers, dots, hyphens, or underscores"}), 400
+
     if users.find_one({"email": email}):
         return jsonify({"error": "User already exists"}), 400
+
+    if users.find_one({"username": username}):
+        return jsonify({"error": "Username is already taken"}), 400
 
     users.insert_one({
         "name": name,
@@ -111,6 +159,7 @@ def register():
         "password": generate_password_hash(password),
         "college": college,
         "game_uid": game_uid,
+        "username": username,
         "role": "player"
     })
 
@@ -180,6 +229,8 @@ def profile():
         "college": user.get("college", ""),
         "game_uid": user.get("game_uid", ""),
         "role": user.get("role", "user"),
+        "username": user.get("username", ""),
+        "has_username": bool(user.get("username")),
         "stats": {
             "tournaments_joined": tournaments_joined,
             "wins": wins,
@@ -219,3 +270,36 @@ def update_profile():
     )
 
     return jsonify({"message": "Profile updated successfully"})
+
+
+# CLAIM USERNAME (for existing users who registered before the username system)
+@auth.route("/claim-username", methods=["POST"])
+@jwt_required()
+def claim_username():
+    user_id = get_jwt_identity()
+    data = request.json or {}
+    username_raw = data.get("username")
+
+    if not username_raw:
+        return jsonify({"error": "Username is required"}), 400
+
+    username = _normalize_username(username_raw)
+    if not _is_valid_username(username):
+        return jsonify({"error": "Username must be 3-20 characters, lowercase letters, numbers, dots, hyphens, or underscores"}), 400
+
+    user = mongo.db.users.find_one({"_id": ObjectId(user_id)})
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    if user.get("username"):
+        return jsonify({"error": "You already have a username"}), 400
+
+    if mongo.db.users.find_one({"username": username}):
+        return jsonify({"error": "Username is already taken"}), 400
+
+    mongo.db.users.update_one(
+        {"_id": ObjectId(user_id)},
+        {"$set": {"username": username}}
+    )
+
+    return jsonify({"message": "Username claimed successfully", "username": username})
