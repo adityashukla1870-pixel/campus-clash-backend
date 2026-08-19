@@ -2,6 +2,7 @@ from flask import Blueprint, jsonify, request
 from flask_jwt_extended import jwt_required, get_jwt, get_jwt_identity
 from bson import ObjectId
 from models.chat_model import ensure_default_channels, serialize_channel, serialize_message
+from utils.cloud_storage import upload_image
 
 chat = Blueprint("chat", __name__)
 mongo = None
@@ -12,6 +13,19 @@ def init_chat_routes(mongo_instance):
     mongo = mongo_instance
     # Seed the default channel list on startup so /channels never returns empty.
     ensure_default_channels(mongo)
+
+
+@chat.route("/upload-image", methods=["POST"])
+@jwt_required()
+def upload_chat_image():
+    file = request.files.get("file")
+    if not file or not file.filename:
+        return jsonify({"error": "No file provided"}), 400
+    try:
+        url = upload_image(file, folder="campus-clash/chat")
+        return jsonify({"url": url})
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @chat.route("/channels", methods=["GET"])

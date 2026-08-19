@@ -7,6 +7,7 @@ from utils.code_generator import generate_payment_code
 from utils.cloud_storage import upload_image
 from utils.time_utils import to_utc_iso
 from routes.notification_routes import create_notification
+from routes.player_stats_routes import upsert_player_stats, upsert_global_wins
 from utils.tournament_lifecycle import build_winner_update, normalize_tournament_payload, is_registration_open
 from datetime import datetime as _dt
 from functools import wraps
@@ -384,6 +385,41 @@ def register_tournament(tournament_id):
             "payment_code": existing["payment_code"],
             "registration_id": str(existing["_id"])
         })
+
+    # Validate usernames for squad mode
+    if t.get("mode") == "squad" and team_members:
+        leader = mongo.db.users.find_one({"_id": safe_object_id(user_id)})
+        if not leader:
+            return jsonify({"error": "Leader user not found"}), 400
+
+        seen_user_ids = {user_id}
+        validated_members = []
+
+        for member in team_members:
+            if not isinstance(member, dict):
+                return jsonify({"error": "Team members must be objects with username, name, and game_uid"}), 400
+
+            member_username = (member.get("username") or "").strip().lower()
+            if not member_username:
+                return jsonify({"error": f"Username is required for teammate: {member.get('name', 'Unknown')}"}), 400
+
+            member_user = mongo.db.users.find_one({"username": member_username})
+            if not member_user:
+                return jsonify({"error": f"No user found with username '{member_username}'"}), 400
+
+            member_user_id = str(member_user["_id"])
+            if member_user_id in seen_user_ids:
+                return jsonify({"error": f"Duplicate player: {member_username}"}), 400
+            seen_user_ids.add(member_user_id)
+
+            validated_members.append({
+                "user_id": member_user_id,
+                "username": member_username,
+                "name": member.get("name") or member_user.get("name", ""),
+                "game_uid": member.get("game_uid") or member_user.get("game_uid", "")
+            })
+
+        team_members = validated_members
 
     code = generate_payment_code()
 
@@ -790,6 +826,16 @@ def declare_winner():
     if not tournament_id or not winner_id:
         return jsonify({"error": "Missing fields"}), 400
 
+    t = mongo.db.tournaments.find_one({"_id": ObjectId(tournament_id)})
+    if not t:
+        return jsonify({"error": "Tournament not found"}), 404
+
+    old_winner_id = t.get("winner_id")
+
+    # Idempotent: if same winner, no-op
+    if old_winner_id == winner_id:
+        return jsonify({"message": "Winner already set to this player"})
+
     winner_entry = {
         "registration_id": None,
         "user_id": winner_id,
@@ -813,13 +859,31 @@ def declare_winner():
         {"$set": update_fields}
     )
 
+    # Update player stats: decrement old winner, increment new winner
+    game = t.get("game", "")
+    if old_winner_id:
+        upsert_global_wins(old_winner_id, -1)
+        if game:
+            upsert_player_stats(old_winner_id, game, tournaments_won_delta=-1)
+
+    upsert_global_wins(winner_id, 1)
+    if game:
+        upsert_player_stats(winner_id, game, tournaments_won_delta=1)
+
+    # Also increment tournaments_played for the winner if first time
+    # (only if they don't already have a stats record for this game)
+    from routes.player_stats_routes import get_player_stats as _get_stats
+    existing_stats = _get_stats(winner_id, game)
+    if existing_stats.get("tournaments_played", 0) == 0:
+        upsert_player_stats(winner_id, game, tournaments_played_delta=1)
+
     t = mongo.db.tournaments.find_one({"_id": ObjectId(tournament_id)})
     tname = t.get("name") if t else "the tournament"
 
     create_notification(
         mongo,
         winner_id,
-        f"🏆 Congratulations! You won \"{tname}\"!",
+        f"Congratulations! You won \"{tname}\"!",
         ntype="winner",
         tournament_id=tournament_id
     )
@@ -903,8 +967,14 @@ def generate_bracket(tournament_id):
 
     # if the whole bracket resolved instantly (e.g. only byes), mark tournament complete
     if len(rounds[-1]) == 1 and rounds[-1][0]["winner"]:
-        update_fields["winner_id"] = rounds[-1][0]["winner"]["user_id"]
+        new_winner_id = rounds[-1][0]["winner"]["user_id"]
+        update_fields["winner_id"] = new_winner_id
         update_fields["status"] = "completed"
+
+        game = t.get("game", "")
+        upsert_global_wins(new_winner_id, 1)
+        if game:
+            upsert_player_stats(new_winner_id, game, tournaments_won_delta=1)
 
     mongo.db.tournaments.update_one(
         {"_id": ObjectId(tournament_id)},
@@ -966,7 +1036,20 @@ def report_match(tournament_id):
 
     final_round = rounds[-1]
     if len(final_round) == 1 and final_round[0]["winner"]:
-        update_fields["winner_id"] = final_round[0]["winner"]["user_id"]
+        new_winner_id = final_round[0]["winner"]["user_id"]
+        old_winner_id = t.get("winner_id")
+
+        if old_winner_id != new_winner_id:
+            game = t.get("game", "")
+            if old_winner_id:
+                upsert_global_wins(old_winner_id, -1)
+                if game:
+                    upsert_player_stats(old_winner_id, game, tournaments_won_delta=-1)
+            upsert_global_wins(new_winner_id, 1)
+            if game:
+                upsert_player_stats(new_winner_id, game, tournaments_won_delta=1)
+
+        update_fields["winner_id"] = new_winner_id
         update_fields["status"] = "completed"
 
     mongo.db.tournaments.update_one(
@@ -998,6 +1081,7 @@ def leaderboard():
             "user_id": user_id,
             "name": user.get("name") if user else "Unknown",
             "college": user.get("college") if user else None,
+            "avatarId": user.get("avatarId") if user else None,
             "wins": entry["wins"],
             "prize_won": entry["prize_won"],
             "tournaments": entry["tournaments"]
