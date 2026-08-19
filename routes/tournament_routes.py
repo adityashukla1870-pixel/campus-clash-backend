@@ -877,6 +877,17 @@ def declare_winner():
     if existing_stats.get("tournaments_played", 0) == 0:
         upsert_player_stats(winner_id, game, tournaments_played_delta=1)
 
+    # Increment tournaments_played for all other approved participants
+    other_participants = mongo.db.registrations.find({
+        "tournament_id": ObjectId(tournament_id),
+        "payment_status": "approved",
+        "user_id": {"$ne": winner_id}
+    })
+    for r in other_participants:
+        user_id = r.get("user_id")
+        if user_id:
+            upsert_player_stats(user_id, game, tournaments_played_delta=1)
+
     t = mongo.db.tournaments.find_one({"_id": ObjectId(tournament_id)})
     tname = t.get("name") if t else "the tournament"
 

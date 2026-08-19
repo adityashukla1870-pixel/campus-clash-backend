@@ -696,6 +696,12 @@ def submit_results(match_id):
     # Compute deltas and update player_stats
     _apply_kill_deltas(prev_results, results, t.get("game", ""))
 
+    # Increment tournaments_played for all participants
+    for r in results:
+        pt = name_lookup.get(r["registration_id"])
+        if pt and pt.get("user_id"):
+            increment_tournaments_played(mongo, pt["user_id"], t.get("game", ""))
+
     for r in results:
         pt = name_lookup.get(r["registration_id"])
         if pt and pt.get("user_id"):
@@ -813,6 +819,7 @@ def finalize_stage(stage_id):
             for pod in pods:
                 for participant in pod.get("participants", []):
                     if participant.get("user_id"):
+                        increment_tournaments_played(mongo, participant["user_id"], t.get("game", ""))
                         is_champ = participant["registration_id"] == champion["registration_id"]
                         msg = (f"Congratulations! Your team won {s['name']}!" if is_champ
                                else f"{s['name']} has concluded. Check the final standings!")
