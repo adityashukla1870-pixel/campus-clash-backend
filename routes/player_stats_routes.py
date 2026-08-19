@@ -20,6 +20,37 @@ def init_player_stats_routes(mongo_instance):
     global mongo
     mongo = mongo_instance
 
+def upsert_player_stats(
+    user_id,
+    game,
+    kills_delta=0,
+    tournaments_played_delta=0,
+    tournaments_won_delta=0
+):
+    """Atomically update a player's per-game stats."""
+    mongo.db.player_stats.update_one(
+        {"user_id": user_id, "game": game},
+        {
+            "$inc": {
+                "total_kills": kills_delta,
+                "tournaments_played": tournaments_played_delta,
+                "tournaments_won": tournaments_won_delta,
+            },
+            "$setOnInsert": {
+                "user_id": user_id,
+                "game": game,
+            }
+        },
+        upsert=True
+    )
+
+
+def upsert_global_wins(user_id, delta):
+    """Atomically update a user's global tournament win count."""
+    mongo.db.users.update_one(
+        {"_id": ObjectId(user_id)},
+        {"$inc": {"tournaments_won": delta}}
+    )
 
 # ---- PLAYER STATS ----
 
