@@ -6,7 +6,7 @@ from datetime import datetime
 from functools import wraps
 
 from routes.notification_routes import create_notification
-from utils.tournament_lifecycle import build_stage_seed_distribution, build_winner_update
+from utils.tournament_lifecycle import build_stage_seed_distribution, build_winner_update, is_registration_open
 
 stage = Blueprint("stage", __name__)
 mongo = None
