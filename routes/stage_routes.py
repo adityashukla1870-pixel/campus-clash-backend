@@ -6,6 +6,8 @@ from datetime import datetime
 from functools import wraps
 
 from routes.notification_routes import create_notification
+from routes.player_stats_routes import upsert_player_stats
+from utils.player_stats import increment_tournaments_played
 from utils.tournament_lifecycle import build_stage_seed_distribution, build_winner_update, is_registration_open
 
 stage = Blueprint("stage", __name__)
