@@ -17,5 +17,7 @@ class Config:
     CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET")
 
     GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
-    
+    RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+    FRONTEND_URL = os.getenv("FRONTEND_URL", "https://campus-clash-og.vercel.app")
+
 

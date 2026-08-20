@@ -2,6 +2,8 @@ from flask import Blueprint, request, jsonify, current_app
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_jwt_extended import create_access_token, create_refresh_token, jwt_required, get_jwt_identity
 from bson import ObjectId
+from datetime import datetime, timedelta, timezone
+import hashlib
 import secrets
 import re
 
@@ -303,3 +305,103 @@ def claim_username():
     )
 
     return jsonify({"message": "Username claimed successfully", "username": username})
+
+
+# ── FORGOT PASSWORD ─────────────────────────────────────────────
+@auth.route("/forgot-password", methods=["POST"])
+def forgot_password():
+    """Send a password-reset email. Always returns 200 to prevent email enumeration."""
+    data = request.json or {}
+    email = (data.get("email") or "").strip().lower()
+
+    # Always return success so attackers can't enumerate accounts
+    success_msg = {"message": "If an account with that email exists, a reset link has been sent."}
+
+    if not email:
+        return jsonify(success_msg)
+
+    user = mongo.db.users.find_one({"email": email})
+    if not user:
+        return jsonify(success_msg)
+
+    # Rate limit: max 3 requests per email per hour
+    one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
+    recent_count = mongo.db.password_resets.count_documents({
+        "user_id": str(user["_id"]),
+        "created_at": {"$gte": one_hour_ago}
+    })
+    if recent_count >= 3:
+        return jsonify(success_msg)
+
+    # Invalidate any existing unused tokens for this user
+    mongo.db.password_resets.update_many(
+        {"user_id": str(user["_id"]), "used": False},
+        {"$set": {"used": True}}
+    )
+
+    # Generate token: SHA256(secrets.token + user_id + timestamp)
+    raw_token = secrets.token_urlsafe(48)
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+
+    mongo.db.password_resets.insert_one({
+        "user_id": str(user["_id"]),
+        "token_hash": token_hash,
+        "created_at": datetime.now(timezone.utc),
+        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=15),
+        "used": False,
+    })
+
+    # Ensure TTL index for auto-cleanup
+    try:
+        mongo.db.password_resets.create_index("expires_at", expireAfterSeconds=0)
+    except Exception:
+        pass
+
+    # Send email
+    frontend_url = current_app.config.get("FRONTEND_URL", "https://campus-clash-og.vercel.app")
+    reset_url = f"{frontend_url}/reset-password?token={raw_token}"
+
+    from utils.email_sender import send_reset_email
+    send_reset_email(email, reset_url)
+
+    return jsonify(success_msg)
+
+
+# ── RESET PASSWORD ──────────────────────────────────────────────
+@auth.route("/reset-password", methods=["POST"])
+def reset_password():
+    """Reset a user's password using a valid, non-expired, non-used token."""
+    data = request.json or {}
+    token = data.get("token", "")
+    new_password = data.get("password", "")
+
+    if not token or not new_password:
+        return jsonify({"error": "Token and new password are required"}), 400
+
+    if len(new_password) < 6:
+        return jsonify({"error": "Password must be at least 6 characters"}), 400
+
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+
+    record = mongo.db.password_resets.find_one({
+        "token_hash": token_hash,
+        "used": False,
+        "expires_at": {"$gt": datetime.now(timezone.utc)}
+    })
+
+    if not record:
+        return jsonify({"error": "Invalid or expired reset token"}), 400
+
+    # Mark token as used
+    mongo.db.password_resets.update_one(
+        {"_id": record["_id"]},
+        {"$set": {"used": True}}
+    )
+
+    # Update password
+    mongo.db.users.update_one(
+        {"_id": ObjectId(record["user_id"])},
+        {"$set": {"password": generate_password_hash(new_password)}}
+    )
+
+    return jsonify({"message": "Password reset successful. You can now log in."})
