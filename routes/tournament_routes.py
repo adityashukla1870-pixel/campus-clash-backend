@@ -450,6 +450,47 @@ def register_tournament(tournament_id):
         result = mongo.db.registrations.insert_one(registration)
         registration_id = str(result.inserted_id)
 
+    # --- Create individual registrations for each teammate + send notifications ---
+    if t.get("mode") == "squad" and team_members:
+        for member in team_members:
+            member_user_id = member.get("user_id")
+            if not member_user_id or member_user_id == user_id:
+                continue
+
+            # Check if teammate already has a registration for this tournament
+            existing_member_reg = mongo.db.registrations.find_one({
+                "user_id": member_user_id,
+                "tournament_id": ObjectId(tournament_id)
+            })
+            if existing_member_reg:
+                continue
+
+            teammate_registration = {
+                "user_id": member_user_id,
+                "tournament_id": ObjectId(tournament_id),
+                "payment_code": code,
+                "payment_status": "teammate",
+                "utr": None,
+                "screenshot": None,
+                "team_name": team_name,
+                "team_members": team_members,
+                "team_leader": {
+                    "name": team_leader.get("name"),
+                    "game_uid": team_leader.get("game_uid"),
+                    "contact": team_leader.get("contact")
+                }
+            }
+            mongo.db.registrations.insert_one(teammate_registration)
+
+            leader_name = team_leader.get("name") or "Your team leader"
+            create_notification(
+                mongo,
+                member_user_id,
+                f'You\'ve been added to team "{team_name}" for "{t.get("name", "a tournament")}" by {leader_name}. Check My Matches!',
+                ntype="info",
+                tournament_id=str(tournament_id)
+            )
+
     return jsonify({
         "payment_code": code,
         "registration_id": registration_id
@@ -650,12 +691,25 @@ def approve_payment(registration_id):
         {"$set": {"payment_status": "approved"}}
     )
 
+    t = mongo.db.tournaments.find_one({"_id": ObjectId(reg["tournament_id"])})
+
+    # Add leader to players
     mongo.db.tournaments.update_one(
         {"_id": ObjectId(reg["tournament_id"])},
-        {"$push": {"players": reg["user_id"]}}
+        {"$addToSet": {"players": reg["user_id"]}}
     )
 
-    t = mongo.db.tournaments.find_one({"_id": ObjectId(reg["tournament_id"])})
+    # Add all team members to players array
+    team_members = reg.get("team_members", [])
+    for member in team_members:
+        member_uid = member.get("user_id")
+        if member_uid:
+            mongo.db.tournaments.update_one(
+                {"_id": ObjectId(reg["tournament_id"])},
+                {"$addToSet": {"players": member_uid}}
+            )
+
+    # Notify leader
     create_notification(
         mongo,
         reg["user_id"],
@@ -663,6 +717,18 @@ def approve_payment(registration_id):
         ntype="payment",
         tournament_id=reg["tournament_id"]
     )
+
+    # Notify all team members
+    for member in team_members:
+        member_uid = member.get("user_id")
+        if member_uid and member_uid != reg["user_id"]:
+            create_notification(
+                mongo,
+                member_uid,
+                f"Your team's payment for \"{t.get('name') if t else 'a tournament'}\" was approved. You're in!",
+                ntype="payment",
+                tournament_id=reg["tournament_id"]
+            )
 
     return jsonify({"message": "Payment Approved"})
 
@@ -681,13 +747,28 @@ def reject_payment(registration_id):
 
     if reg:
         t = mongo.db.tournaments.find_one({"_id": safe_object_id(reg.get("tournament_id"))})
+        tname = t.get('name') if t else 'a tournament'
+
+        # Notify leader
         create_notification(
             mongo,
             reg["user_id"],
-            f"Your payment for \"{t.get('name') if t else 'a tournament'}\" was rejected. Please re-register with valid proof.",
+            f"Your payment for \"{tname}\" was rejected. Please re-register with valid proof.",
             ntype="payment",
             tournament_id=reg.get("tournament_id")
         )
+
+        # Notify all team members
+        for member in reg.get("team_members", []):
+            member_uid = member.get("user_id")
+            if member_uid and member_uid != reg["user_id"]:
+                create_notification(
+                    mongo,
+                    member_uid,
+                    f"Your team's payment for \"{tname}\" was rejected. The leader needs to re-register.",
+                    ntype="payment",
+                    tournament_id=reg.get("tournament_id")
+                )
 
     return jsonify({"message": "Payment Rejected"})
 
@@ -699,8 +780,12 @@ def my_tournaments():
 
     user_id = get_jwt_identity()
 
+    # Find registrations where user is leader OR teammate
     registrations = list(mongo.db.registrations.find({
-        "user_id": user_id
+        "$or": [
+            {"user_id": user_id},
+            {"team_members.user_id": user_id}
+        ]
     }))
 
     data = []
@@ -723,6 +808,11 @@ def my_tournaments():
                 winner_user = mongo.db.users.find_one({"_id": safe_object_id(t["winner_id"])})
                 winner_name = winner_user.get("name") if winner_user else "Unknown"
 
+            # Determine role: leader or teammate
+            role = "leader"
+            if r.get("user_id") != user_id:
+                role = "teammate"
+
             data.append({
                 "id": str(t["_id"]),
                 "name": t["name"],
@@ -735,7 +825,8 @@ def my_tournaments():
                 "format": t.get("format", "quick"),
                 "banner_image": t.get("banner_image"),
                 "has_bracket": bool(t.get("bracket")),
-                "team_name": r.get("team_name")
+                "team_name": r.get("team_name"),
+                "role": role
             })
 
     return jsonify(data)
@@ -771,18 +862,35 @@ def release_room(tournament_id):
     )
 
     t = mongo.db.tournaments.find_one({"_id": ObjectId(tournament_id)})
-    approved = mongo.db.registrations.find({
+    participants = mongo.db.registrations.find({
         "tournament_id": ObjectId(tournament_id),
-        "payment_status": "approved"
+        "payment_status": {"$in": ["approved", "teammate"]}
     })
-    for r in approved:
+    notified_user_ids = set()
+    for r in participants:
+        uid = r["user_id"]
+        if uid in notified_user_ids:
+            continue
+        notified_user_ids.add(uid)
         create_notification(
             mongo,
-            r["user_id"],
+            uid,
             f"Room details for \"{t.get('name') if t else 'your tournament'}\" are live. Check the room page!",
             ntype="room",
             tournament_id=tournament_id
         )
+        # Also notify team members
+        for member in r.get("team_members", []):
+            member_uid = member.get("user_id")
+            if member_uid and member_uid not in notified_user_ids:
+                notified_user_ids.add(member_uid)
+                create_notification(
+                    mongo,
+                    member_uid,
+                    f"Room details for \"{t.get('name') if t else 'your tournament'}\" are live. Check the room page!",
+                    ntype="room",
+                    tournament_id=tournament_id
+                )
 
     return jsonify({"message":"Room released successfully"})
 
@@ -795,7 +903,7 @@ def get_tournament_room(tournament_id):
     registration = mongo.db.registrations.find_one({
         "user_id": user_id,
         "tournament_id": ObjectId(tournament_id),
-        "payment_status": "approved"
+        "payment_status": {"$in": ["approved", "teammate"]}
     })
 
     if not registration:
@@ -901,17 +1009,33 @@ def declare_winner():
 
     other_participants = mongo.db.registrations.find({
         "tournament_id": ObjectId(tournament_id),
-        "payment_status": "approved",
+        "payment_status": {"$in": ["approved", "teammate"]},
         "user_id": {"$ne": winner_id}
     })
+    notified_user_ids = {winner_id}
     for r in other_participants:
-        create_notification(
-            mongo,
-            r["user_id"],
-            f"\"{tname}\" has ended. Check the bracket to see how it played out.",
-            ntype="winner",
-            tournament_id=tournament_id
-        )
+        uid = r.get("user_id")
+        if uid and uid not in notified_user_ids:
+            notified_user_ids.add(uid)
+            create_notification(
+                mongo,
+                uid,
+                f"\"{tname}\" has ended. Check the bracket to see how it played out.",
+                ntype="winner",
+                tournament_id=tournament_id
+            )
+        # Also notify team members
+        for member in r.get("team_members", []):
+            member_uid = member.get("user_id")
+            if member_uid and member_uid not in notified_user_ids:
+                notified_user_ids.add(member_uid)
+                create_notification(
+                    mongo,
+                    member_uid,
+                    f"\"{tname}\" has ended. Check the bracket to see how it played out.",
+                    ntype="winner",
+                    tournament_id=tournament_id
+                )
 
     return jsonify({"message": "Winner declared successfully"})
 

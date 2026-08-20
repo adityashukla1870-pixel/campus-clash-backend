@@ -308,6 +308,17 @@ def notify_group_assignments(tournament_id, stage_id, stage_name):
                     ntype="group",
                     tournament_id=str(tournament_id)
                 )
+                # Also notify team members
+                for member in participant.get("team_members", []):
+                    member_uid = member.get("user_id")
+                    if member_uid:
+                        create_notification(
+                            mongo,
+                            member_uid,
+                            f"You've been placed in {pod['name']} for {stage_name}. Check My Tournaments for details.",
+                            ntype="group",
+                            tournament_id=str(tournament_id)
+                        )
 
 
 # ---------------- CREATE A STAGE WITH ADMIN-PICKED (MANUAL) GROUPS ----------------
@@ -606,8 +617,10 @@ def release_match_room(match_id):
 
     p = mongo.db.stage_pods.find_one({"_id": m["pod_id"]})
     if p:
+        notified_user_ids = set()
         for participant in p.get("participants", []):
-            if participant.get("user_id"):
+            if participant.get("user_id") and participant["user_id"] not in notified_user_ids:
+                notified_user_ids.add(participant["user_id"])
                 create_notification(
                     mongo,
                     participant["user_id"],
@@ -615,6 +628,18 @@ def release_match_room(match_id):
                     ntype="room",
                     tournament_id=str(m["tournament_id"])
                 )
+            # Also notify team members
+            for member in participant.get("team_members", []):
+                member_uid = member.get("user_id")
+                if member_uid and member_uid not in notified_user_ids:
+                    notified_user_ids.add(member_uid)
+                    create_notification(
+                        mongo,
+                        member_uid,
+                        f"Room is live for {p['name']} — Match {m['match_number']}. Check the standings page!",
+                        ntype="room",
+                        tournament_id=str(m["tournament_id"])
+                    )
 
     return jsonify({"message": "Room released"})
 
@@ -712,6 +737,17 @@ def submit_results(match_id):
                 ntype="winner",
                 tournament_id=str(m["tournament_id"])
             )
+            # Also notify team members
+            for member in pt.get("team_members", []):
+                member_uid = member.get("user_id")
+                if member_uid:
+                    create_notification(
+                        mongo,
+                        member_uid,
+                        f"Results are out for {p['name']} — Match {m['match_number']}: #{r['placement']} place, {r['kills']} kills ({r['points']} pts).",
+                        ntype="winner",
+                        tournament_id=str(m["tournament_id"])
+                    )
 
     return jsonify({"message": "Results submitted", "results": results, "mvp": mvp})
 
@@ -825,6 +861,14 @@ def finalize_stage(stage_id):
                                else f"{s['name']} has concluded. Check the final standings!")
                         create_notification(mongo, participant["user_id"], msg, ntype="winner",
                                              tournament_id=str(s["tournament_id"]))
+                        # Also notify team members
+                        for member in participant.get("team_members", []):
+                            member_uid = member.get("user_id")
+                            if member_uid:
+                                member_msg = (f"Congratulations! Your team won {s['name']}!" if is_champ
+                                              else f"{s['name']} has concluded. Check the final standings!")
+                                create_notification(mongo, member_uid, member_msg, ntype="winner",
+                                                     tournament_id=str(s["tournament_id"]))
 
     return jsonify({"message": "Stage finalized"})
 
