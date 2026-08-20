@@ -57,7 +57,7 @@ def get_tournament_scoring(tournament_id):
 
 
 def get_roster_by_id(tournament_id):
-    """registration_id -> {registration_id, user_id, name, team_members} for every approved entry."""
+    """registration_id -> {registration_id, user_id, name, team_members, team_leader} for every approved entry."""
     registrations = mongo.db.registrations.find({
         "tournament_id": ObjectId(tournament_id),
         "payment_status": "approved"
@@ -70,7 +70,8 @@ def get_roster_by_id(tournament_id):
             "registration_id": str(r["_id"]),
             "user_id": r.get("user_id"),
             "name": display_name,
-            "team_members": r.get("team_members", [])
+            "team_members": r.get("team_members", []),
+            "team_leader": r.get("team_leader")
         }
     return roster
 
@@ -234,7 +235,8 @@ def create_stage(tournament_id):
                     "registration_id": p["registration_id"],
                     "user_id": p.get("user_id"),
                     "name": p["name"],
-                    "team_members": base.get("team_members", [])
+                    "team_members": base.get("team_members", []),
+                    "team_leader": base.get("team_leader")
                 })
 
             if len(enriched) < 2:
