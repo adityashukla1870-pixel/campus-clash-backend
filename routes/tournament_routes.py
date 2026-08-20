@@ -526,6 +526,42 @@ def upload_payment(registration_id):
     return jsonify({"message":"Payment proof uploaded"})
 
 
+# ---------------- UPLOAD INSTAGRAM FOLLOW PROOF ----------------
+@tournament.route("/upload-ig-proof/<registration_id>", methods=["POST"])
+@jwt_required()
+def upload_ig_proof(registration_id):
+
+    files = request.files.getlist("files")
+    if not files or len(files) == 0:
+        return jsonify({"error": "At least one screenshot is required"}), 400
+
+    if len(files) > 4:
+        return jsonify({"error": "Maximum 4 screenshots allowed"}), 400
+
+    screenshot_urls = []
+    for f in files:
+        if not f or not f.filename:
+            continue
+        try:
+            url = upload_image(f, folder="campus-clash/ig-proof")
+            screenshot_urls.append(url)
+        except RuntimeError as e:
+            return jsonify({"error": str(e)}), 500
+
+    if not screenshot_urls:
+        return jsonify({"error": "No valid screenshots uploaded"}), 400
+
+    mongo.db.registrations.update_one(
+        {"_id": ObjectId(registration_id)},
+        {"$set": {
+            "ig_screenshots": screenshot_urls,
+            "payment_status": "pending"
+        }}
+    )
+
+    return jsonify({"message": "Instagram proof uploaded", "count": len(screenshot_urls)})
+
+
 # ---------------- ADMIN - FINAL PARTICIPANT LIST (after registration closes) ----------------
 @tournament.route("/admin/<tournament_id>/final-participants", methods=["GET"])
 @admin_required
@@ -616,13 +652,15 @@ def final_participants_csv(tournament_id):
 @admin_required
 def pending_payments():
 
-    # Only show registrations where the user has actually submitted proof
-    # (UTR + screenshot). A registration that only reserved a payment code
-    # but never paid has nothing for the admin to verify yet.
+    # Show registrations where the user has submitted proof:
+    # - Payment-based: UTR + screenshot (paid tournaments)
+    # - IG-proof: ig_screenshots array (free tournaments)
     pending = list(mongo.db.registrations.find({
         "payment_status": "pending",
-        "utr": {"$ne": None},
-        "screenshot": {"$ne": None}
+        "$or": [
+            {"utr": {"$ne": None}, "screenshot": {"$ne": None}},
+            {"ig_screenshots": {"$ne": None, "$not": {"$size": 0}}}
+        ]
     }))
 
     for p in pending:
