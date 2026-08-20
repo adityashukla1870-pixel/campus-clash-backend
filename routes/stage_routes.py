@@ -665,108 +665,117 @@ def release_match_room(match_id):
 @stage.route("/matches/<match_id>/results", methods=["POST"])
 @admin_required
 def submit_results(match_id):
-    m = mongo.db.stage_matches.find_one({"_id": safe_object_id(match_id)})
-    if not m:
-        return jsonify({"error": "Match not found"}), 404
+    try:
+        m = mongo.db.stage_matches.find_one({"_id": safe_object_id(match_id)})
+        if not m:
+            return jsonify({"error": "Match not found"}), 404
 
-    p = mongo.db.stage_pods.find_one({"_id": m["pod_id"]})
-    if not p:
-        return jsonify({"error": "Pod not found"}), 404
+        p = mongo.db.stage_pods.find_one({"_id": m["pod_id"]})
+        if not p:
+            return jsonify({"error": "Pod not found"}), 404
 
-    t, points_table, kill_point_value = get_tournament_scoring(str(m["tournament_id"]))
-    if not t:
-        return jsonify({"error": "Tournament not found"}), 404
+        t, points_table, kill_point_value = get_tournament_scoring(str(m["tournament_id"]))
+        if not t:
+            return jsonify({"error": "Tournament not found"}), 404
 
-    data = request.get_json(silent=True) or {}
-    raw_results = data.get("results", [])
-    if not raw_results:
-        return jsonify({"error": "No results submitted"}), 400
+        data = request.get_json(silent=True) or {}
+        raw_results = data.get("results", [])
+        if not raw_results:
+            return jsonify({"error": "No results submitted"}), 400
 
-    name_lookup = {pt["registration_id"]: pt for pt in p.get("participants", [])}
+        name_lookup = {pt["registration_id"]: pt for pt in p.get("participants", [])}
 
-    # Capture previous results for delta computation
-    prev_results = m.get("results", [])
+        # Capture previous results for delta computation
+        prev_results = m.get("results", [])
 
-    results = []
-    for r in raw_results:
-        rid = r.get("registration_id")
-        if rid not in name_lookup:
-            continue
-        placement = int(r.get("placement", 0))
+        results = []
+        for r in raw_results:
+            rid = r.get("registration_id")
+            if rid not in name_lookup:
+                continue
+            placement = int(r.get("placement", 0))
 
-        participant = name_lookup[rid]
-        registration = mongo.db.registrations.find_one({"_id": safe_object_id(rid)})
+            participant = name_lookup[rid]
+            registration = mongo.db.registrations.find_one({"_id": safe_object_id(rid)})
 
-        raw_players = r.get("players")
-        if raw_players:
-            players = []
-            for pl in raw_players:
-                pl_name = pl.get("name", "")
-                pl_kills = int(pl.get("kills", 0))
-                # Resolve user_id for this player
-                pl_user_id = None
-                if registration:
-                    if registration.get("user_id") == participant.get("user_id"):
-                        pl_user_id = participant.get("user_id")
-                    else:
-                        for tm in registration.get("team_members", []):
-                            if tm.get("name") == pl_name or tm.get("username") == pl.get("username"):
-                                pl_user_id = tm.get("user_id")
-                                break
-                players.append({"name": pl_name, "kills": pl_kills, "user_id": pl_user_id})
-            kills = sum(pl["kills"] for pl in players)
-        else:
-            players = []
-            kills = int(r.get("kills", 0))
+            raw_players = r.get("players")
+            if raw_players:
+                players = []
+                leader_name = None
+                if registration and registration.get("team_leader"):
+                    leader_name = registration["team_leader"].get("name")
 
-        results.append({
-            "registration_id": rid,
-            "name": participant["name"],
-            "placement": placement,
-            "kills": kills,
-            "points": calc_points(placement, kills, points_table, kill_point_value),
-            "players": players
-        })
+                for pl in raw_players:
+                    pl_name = pl.get("name", "")
+                    pl_kills = int(pl.get("kills", 0))
+                    pl_user_id = None
+                    if registration:
+                        if leader_name and pl_name == leader_name:
+                            pl_user_id = registration.get("user_id")
+                        else:
+                            for tm in registration.get("team_members", []):
+                                if tm.get("name") == pl_name:
+                                    pl_user_id = tm.get("user_id")
+                                    break
+                    players.append({"name": pl_name, "kills": pl_kills, "user_id": pl_user_id})
+                kills = sum(pl["kills"] for pl in players)
+            else:
+                players = []
+                kills = int(r.get("kills", 0))
 
-    mvp = compute_match_mvp(results)
+            results.append({
+                "registration_id": rid,
+                "name": participant["name"],
+                "placement": placement,
+                "kills": kills,
+                "points": calc_points(placement, kills, points_table, kill_point_value),
+                "players": players
+            })
 
-    mongo.db.stage_matches.update_one(
-        {"_id": m["_id"]},
-        {"$set": {"results": results, "status": "completed", "mvp": mvp}}
-    )
+        mvp = compute_match_mvp(results)
 
-    # Compute deltas and update player_stats
-    _apply_kill_deltas(prev_results, results, t.get("game", ""))
+        mongo.db.stage_matches.update_one(
+            {"_id": m["_id"]},
+            {"$set": {"results": results, "status": "completed", "mvp": mvp}}
+        )
 
-    # Increment tournaments_played for all participants
-    for r in results:
-        pt = name_lookup.get(r["registration_id"])
-        if pt and pt.get("user_id"):
-            increment_tournaments_played(mongo, pt["user_id"], t.get("game", ""))
+        # Compute deltas and update player_stats
+        _apply_kill_deltas(prev_results, results, t.get("game", ""))
 
-    for r in results:
-        pt = name_lookup.get(r["registration_id"])
-        if pt and pt.get("user_id"):
-            create_notification(
-                mongo,
-                pt["user_id"],
-                f"Results are out for {p['name']} — Match {m['match_number']}: #{r['placement']} place, {r['kills']} kills ({r['points']} pts).",
-                ntype="winner",
-                tournament_id=str(m["tournament_id"])
-            )
-            # Also notify team members
-            for member in pt.get("team_members", []):
-                member_uid = member.get("user_id")
-                if member_uid:
-                    create_notification(
-                        mongo,
-                        member_uid,
-                        f"Results are out for {p['name']} — Match {m['match_number']}: #{r['placement']} place, {r['kills']} kills ({r['points']} pts).",
-                        ntype="winner",
-                        tournament_id=str(m["tournament_id"])
-                    )
+        # Increment tournaments_played for all participants
+        for r in results:
+            pt = name_lookup.get(r["registration_id"])
+            if pt and pt.get("user_id"):
+                increment_tournaments_played(mongo, pt["user_id"], t.get("game", ""))
 
-    return jsonify({"message": "Results submitted", "results": results, "mvp": mvp})
+        for r in results:
+            pt = name_lookup.get(r["registration_id"])
+            if pt and pt.get("user_id"):
+                create_notification(
+                    mongo,
+                    pt["user_id"],
+                    f"Results are out for {p['name']} — Match {m['match_number']}: #{r['placement']} place, {r['kills']} kills ({r['points']} pts).",
+                    ntype="winner",
+                    tournament_id=str(m["tournament_id"])
+                )
+                # Also notify team members
+                for member in pt.get("team_members", []):
+                    member_uid = member.get("user_id")
+                    if member_uid:
+                        create_notification(
+                            mongo,
+                            member_uid,
+                            f"Results are out for {p['name']} — Match {m['match_number']}: #{r['placement']} place, {r['kills']} kills ({r['points']} pts).",
+                            ntype="winner",
+                            tournament_id=str(m["tournament_id"])
+                        )
+
+        return jsonify({"message": "Results submitted", "results": results, "mvp": mvp})
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 
 def _apply_kill_deltas(prev_results, new_results, game):
