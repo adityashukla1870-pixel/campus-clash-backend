@@ -7,7 +7,7 @@ from functools import wraps
 
 from routes.notification_routes import create_notification
 from routes.player_stats_routes import upsert_player_stats, upsert_global_wins
-from utils.player_stats import increment_tournaments_played
+from utils.player_stats import increment_tournaments_played, normalize_game as _normalize_game
 from utils.tournament_lifecycle import build_stage_seed_distribution, build_winner_update, is_registration_open
 
 stage = Blueprint("stage", __name__)
@@ -990,4 +990,104 @@ def tournament_stats(tournament_id):
         "individual_frags": individual_frags,
         "chicken_dinners": chicken_dinners,
         "mvp_leaderboard": mvp_leaderboard
+    })
+
+
+# ---------------- TEMP MIGRATION: FIX KILL STATS ----------------
+@stage.route("/admin/fix-kill-stats", methods=["POST"])
+@admin_required
+def fix_kill_stats():
+    """One-time migration: reset player_stats.total_kills and recompute
+    from all completed match results.  Safe to re-run (idempotent).
+
+    DELETE this endpoint after running once.
+    """
+    from bson.objectid import ObjectId as _OID
+
+    # 1. Reset all total_kills to 0
+    mongo.db.player_stats.update_many({}, {"$set": {"total_kills": 0}})
+
+    # 2. Accumulate per-user kills from completed matches
+    kill_deltas = {}
+    tp_counts = {}
+
+    matches = list(mongo.db.stage_matches.find({"status": "completed"}))
+
+    for m in matches:
+        tid = m.get("tournament_id")
+        t = mongo.db.tournaments.find_one({"_id": tid}) if tid else None
+        game = _normalize_game(t.get("game", "BGMI")) if t else "BGMI"
+        tid_str = str(tid) if tid else None
+
+        pod = mongo.db.stage_pods.find_one({"_id": m.get("pod_id")}) if m.get("pod_id") else None
+        pod_user = {}
+        if pod:
+            for pt in pod.get("participants", []):
+                if pt.get("user_id"):
+                    pod_user[pt["registration_id"]] = pt["user_id"]
+
+        for res in m.get("results", []):
+            rid = res.get("registration_id")
+            players = res.get("players") or []
+            if players:
+                for pl in players:
+                    uid = pl.get("user_id")
+                    if not uid:
+                        continue
+                    kills = pl.get("kills", 0) or 0
+                    if kills > 0:
+                        key = (uid, game)
+                        kill_deltas[key] = kill_deltas.get(key, 0) + kills
+                        if tid_str:
+                            tp_counts.setdefault(key, set()).add(tid_str)
+            else:
+                uid = pod_user.get(rid)
+                if not uid:
+                    continue
+                kills = res.get("kills", 0) or 0
+                if kills > 0:
+                    key = (uid, game)
+                    kill_deltas[key] = kill_deltas.get(key, 0) + kills
+                    if tid_str:
+                        tp_counts.setdefault(key, set()).add(tid_str)
+
+    # 3. Apply kills
+    for (uid, game), delta in kill_deltas.items():
+        if delta <= 0:
+            continue
+        mongo.db.player_stats.update_one(
+            {"user_id": uid, "game": game},
+            {"$inc": {"total_kills": delta},
+             "$setOnInsert": {"user_id": uid, "game": game}},
+            upsert=True,
+        )
+
+    # 4. Set tournaments_played
+    for (uid, game), tids in tp_counts.items():
+        mongo.db.player_stats.update_one(
+            {"user_id": uid, "game": game},
+            {"$set": {"tournaments_played": len(tids)}},
+            upsert=True,
+        )
+
+    # 5. Backfill usernames
+    for (uid, game) in kill_deltas.keys():
+        doc = mongo.db.player_stats.find_one({"user_id": uid, "game": game})
+        if doc and not doc.get("username"):
+            user = mongo.db.users.find_one({"_id": safe_object_id(uid)})
+            if user:
+                mongo.db.player_stats.update_one(
+                    {"_id": doc["_id"]},
+                    {"$set": {"username": user.get("username", "")}}
+                )
+
+    summary = []
+    for (uid, game), delta in sorted(kill_deltas.items(), key=lambda x: -x[1])[:20]:
+        user = mongo.db.users.find_one({"_id": safe_object_id(uid)})
+        name = user.get("username", uid) if user else uid
+        summary.append(f"{name}: +{delta} kills ({game})")
+
+    return jsonify({
+        "message": f"Fixed {len(kill_deltas)} user+game pairs from {len(matches)} matches",
+        "top_20": summary
     })
