@@ -205,7 +205,7 @@ def create_stage(tournament_id):
 
     if not existing:
         if is_registration_open(t):
-            return jsonify({"error": "Registration is still open — groups can be launched only after registration closes"}), 400
+            return jsonify({"error": "Registration is still openn — groups can be launched only after registration closes"}), 400
         participants = list(roster_by_id.values())
         if len(participants) < 2:
             return jsonify({"error": "Need at least 2 approved participants to start a stage"}), 400
