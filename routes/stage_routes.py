@@ -134,13 +134,24 @@ def compute_match_mvp(results):
 
 
 def serialize_pod(p, include_matches=False):
+    participants = p.get("participants", [])
+    # Enrich participants with team_leader if missing (old pods created before fix)
+    enriched = []
+    for part in participants:
+        part = dict(part)
+        if "team_leader" not in part:
+            reg = mongo.db.registrations.find_one({"_id": safe_object_id(part.get("registration_id"))})
+            if reg and reg.get("team_leader"):
+                part["team_leader"] = reg["team_leader"]
+        enriched.append(part)
+
     out = {
         "id": str(p["_id"]),
         "stage_id": str(p["stage_id"]),
         "pod_index": p["pod_index"],
         "name": p["name"],
         "status": p.get("status", "active"),
-        "participants": p.get("participants", []),
+        "participants": enriched,
         "final_standings": p.get("final_standings")
     }
     if include_matches:
