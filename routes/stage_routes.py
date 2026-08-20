@@ -185,114 +185,118 @@ def serialize_stage(s, include_pods=False):
 @stage.route("/<tournament_id>/create", methods=["POST"])
 @admin_required
 def create_stage(tournament_id):
+    try:
+        t = mongo.db.tournaments.find_one({"_id": safe_object_id(tournament_id)})
+        if not t:
+            return jsonify({"error": "Tournament not found"}), 404
 
-    t = mongo.db.tournaments.find_one({"_id": safe_object_id(tournament_id)})
-    if not t:
-        return jsonify({"error": "Tournament not found"}), 404
+        data = request.get_json(silent=True) or {}
+        name = data.get("name")
+        is_final = bool(data.get("is_final", False))
+        advance_count = data.get("advance_count")
+        try:
+            pod_count = max(int(data.get("pod_count") or 1), 1)
+        except (TypeError, ValueError):
+            pod_count = 1
+        seed_strategy = data.get("seed_strategy") or t.get("seed_strategy", "random")
 
-    data = request.get_json(silent=True) or {}
-    name = data.get("name")
-    is_final = bool(data.get("is_final", False))
-    advance_count = data.get("advance_count")
-    pod_count = max(int(data.get("pod_count", 1)), 1)
-    seed_strategy = data.get("seed_strategy") or t.get("seed_strategy", "random")
+        if not name:
+            return jsonify({"error": "Stage name is required"}), 400
 
-    if not name:
-        return jsonify({"error": "Stage name is required"}), 400
+        existing = list(mongo.db.tournament_stages.find({"tournament_id": ObjectId(tournament_id)}))
+        roster_by_id = get_roster_by_id(tournament_id)
 
-    existing = list(mongo.db.tournament_stages.find({"tournament_id": ObjectId(tournament_id)}))
-    roster_by_id = get_roster_by_id(tournament_id)
+        if not existing:
+            if is_registration_open(t):
+                return jsonify({"error": "Registration is still open — groups can be launched only after registration closes"}), 400
+            participants = list(roster_by_id.values())
+            if len(participants) < 2:
+                return jsonify({"error": "Need at least 2 approved participants to start a stage"}), 400
+            stage_index = 0
+            distribution = distribute_random(participants, pod_count) if seed_strategy != "snake" else distribute_snake(participants, pod_count)
+        else:
+            prev = max(existing, key=lambda s: s["stage_index"])
+            if prev.get("status") != "completed":
+                return jsonify({"error": f"Finalize '{prev['name']}' before starting the next stage"}), 400
 
-    if not existing:
-        if is_registration_open(t):
-            return jsonify({"error": "Registration is still openn — groups can be launched only after registration closes"}), 400
-        participants = list(roster_by_id.values())
-        if len(participants) < 2:
-            return jsonify({"error": "Need at least 2 approved participants to start a stage"}), 400
-        stage_index = 0
-        distribution = distribute_random(participants, pod_count) if seed_strategy != "snake" else distribute_snake(participants, pod_count)
-    else:
-        prev = max(existing, key=lambda s: s["stage_index"])
-        if prev.get("status") != "completed":
-            return jsonify({"error": f"Finalize '{prev['name']}' before starting the next stage"}), 400
+            prev_pods = list(mongo.db.stage_pods.find({"stage_id": prev["_id"]}))
+            pool = []
+            for pod in prev_pods:
+                standings = pod.get("final_standings") or compute_pod_standings(pod)
+                cutoff = prev.get("advance_count") or len(standings)
+                pool.extend(standings[:cutoff])
 
-        prev_pods = list(mongo.db.stage_pods.find({"stage_id": prev["_id"]}))
-        pool = []
-        for pod in prev_pods:
-            standings = pod.get("final_standings") or compute_pod_standings(pod)
-            cutoff = prev.get("advance_count") or len(standings)
-            pool.extend(standings[:cutoff])
+            pool.sort(key=lambda x: (-x["total_points"], -x["total_kills"]))
+            enriched = []
+            for p in pool:
+                base = roster_by_id.get(p["registration_id"], {})
+                enriched.append({
+                    "registration_id": p["registration_id"],
+                    "user_id": p.get("user_id"),
+                    "name": p["name"],
+                    "team_members": base.get("team_members", [])
+                })
 
-        pool.sort(key=lambda x: (-x["total_points"], -x["total_kills"]))
-        # re-attach fresh team_members snapshot in case anything changed
-        enriched = []
-        for p in pool:
-            base = roster_by_id.get(p["registration_id"], {})
-            enriched.append({
-                "registration_id": p["registration_id"],
-                "user_id": p.get("user_id"),
-                "name": p["name"],
-                "team_members": base.get("team_members", [])
-            })
+            if len(enriched) < 2:
+                return jsonify({"error": "Not enough teams advanced to start this stage"}), 400
 
-        if len(enriched) < 2:
-            return jsonify({"error": "Not enough teams advanced to start this stage"}), 400
+            stage_index = prev["stage_index"] + 1
+            distribution = distribute_snake(enriched, pod_count)
 
-        stage_index = prev["stage_index"] + 1
-        distribution = distribute_snake(enriched, pod_count)
-
-    doc = {
-        "tournament_id": ObjectId(tournament_id),
-        "stage_index": stage_index,
-        "name": name,
-        "is_final": is_final,
-        "advance_count": int(advance_count) if advance_count else None,
-        "status": "active",
-        "created_at": datetime.utcnow()
-    }
-    result = mongo.db.tournament_stages.insert_one(doc)
-    doc["_id"] = result.inserted_id
-
-    letters = "ABCDEFGHIJKLMNOP"
-    for i, pod_participants in enumerate(distribution):
-        if not pod_participants:
-            continue
-        pod_doc = {
-            "stage_id": doc["_id"],
+        doc = {
             "tournament_id": ObjectId(tournament_id),
-            "pod_index": i,
-            "name": f"Group {letters[i] if i < len(letters) else i+1}" if pod_count > 1 else name,
-            "participants": pod_participants,
+            "stage_index": stage_index,
+            "name": name,
+            "is_final": is_final,
+            "advance_count": int(advance_count) if advance_count else None,
             "status": "active",
-            "final_standings": None,
             "created_at": datetime.utcnow()
         }
-        mongo.db.stage_pods.insert_one(pod_doc)
+        result = mongo.db.tournament_stages.insert_one(doc)
+        doc["_id"] = result.inserted_id
 
-    mongo.db.tournaments.update_one(
-        {"_id": ObjectId(tournament_id)},
-        {
-            "$set": {"status": "in_progress", "grouping_status": "finalized"},
-            "$push": {
-                "stage_flow": {
-                    "stage_id": str(doc["_id"]),
-                    "name": name,
-                    "stage_index": stage_index,
-                    "is_final": is_final,
-                    "status": "active",
-                    "created_at": datetime.utcnow()
+        letters = "ABCDEFGHIJKLMNOP"
+        for i, pod_participants in enumerate(distribution):
+            if not pod_participants:
+                continue
+            pod_doc = {
+                "stage_id": doc["_id"],
+                "tournament_id": ObjectId(tournament_id),
+                "pod_index": i,
+                "name": f"Group {letters[i] if i < len(letters) else i+1}" if pod_count > 1 else name,
+                "participants": pod_participants,
+                "status": "active",
+                "final_standings": None,
+                "created_at": datetime.utcnow()
+            }
+            mongo.db.stage_pods.insert_one(pod_doc)
+
+        mongo.db.tournaments.update_one(
+            {"_id": ObjectId(tournament_id)},
+            {
+                "$set": {"status": "in_progress", "grouping_status": "finalized"},
+                "$push": {
+                    "stage_flow": {
+                        "stage_id": str(doc["_id"]),
+                        "name": name,
+                        "stage_index": stage_index,
+                        "is_final": is_final,
+                        "status": "active",
+                        "created_at": datetime.utcnow()
+                    }
                 }
             }
-        }
-    )
+        )
 
-    # Only the very first stage represents "you're locked into a group" for
-    # the participant — later stages (playoffs/finals) reshuffle survivors,
-    # which already gets its own "stage concluded" notification elsewhere.
-    if stage_index == 0:
-        notify_group_assignments(tournament_id, doc["_id"], name)
+        if stage_index == 0:
+            notify_group_assignments(tournament_id, doc["_id"], name)
 
-    return jsonify(serialize_stage(doc, include_pods=True))
+        return jsonify(serialize_stage(doc, include_pods=True))
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 
 def notify_group_assignments(tournament_id, stage_id, stage_name):
