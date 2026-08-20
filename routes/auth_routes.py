@@ -405,3 +405,64 @@ def reset_password():
     )
 
     return jsonify({"message": "Password reset successful. You can now log in."})
+
+
+# ── ADMIN: SEARCH USERS ────────────────────────────────────────
+@auth.route("/admin/users", methods=["GET"])
+@jwt_required()
+def admin_list_users():
+    """Search users by name, email, or username. Admin only."""
+    user_id = get_jwt_identity()
+    admin = mongo.db.users.find_one({"_id": ObjectId(user_id)})
+    if not admin or admin.get("role") != "admin":
+        return jsonify({"error": "Admin access required"}), 403
+
+    q = (request.args.get("q") or "").strip()
+    query = {}
+    if q:
+        query = {
+            "$or": [
+                {"name": {"$regex": q, "$options": "i"}},
+                {"email": {"$regex": q, "$options": "i"}},
+                {"username": {"$regex": q, "$options": "i"}},
+            ]
+        }
+
+    users = list(mongo.db.users.find(query, {"password": 0}).sort("name", 1).limit(50))
+    for u in users:
+        u["_id"] = str(u["_id"])
+
+    return jsonify(users)
+
+
+# ── ADMIN: RESET USER PASSWORD ──────────────────────────────────
+@auth.route("/admin/reset-user-password", methods=["POST"])
+@jwt_required()
+def admin_reset_password():
+    """Admin can reset any user's password. Body: {user_id, new_password}"""
+    admin_id = get_jwt_identity()
+    admin = mongo.db.users.find_one({"_id": ObjectId(admin_id)})
+    if not admin or admin.get("role") != "admin":
+        return jsonify({"error": "Admin access required"}), 403
+
+    data = request.json or {}
+    target_user_id = data.get("user_id")
+    new_password = data.get("new_password", "")
+
+    if not target_user_id or not new_password:
+        return jsonify({"error": "user_id and new_password are required"}), 400
+
+    if len(new_password) < 6:
+        return jsonify({"error": "Password must be at least 6 characters"}), 400
+
+    target = mongo.db.users.find_one({"_id": ObjectId(target_user_id)})
+    if not target:
+        return jsonify({"error": "User not found"}), 404
+
+    mongo.db.users.update_one(
+        {"_id": ObjectId(target_user_id)},
+        {"$set": {"password": generate_password_hash(new_password)}}
+    )
+
+    name = target.get("name") or target.get("email") or target_user_id
+    return jsonify({"message": f"Password reset for {name}", "user_id": target_user_id})
