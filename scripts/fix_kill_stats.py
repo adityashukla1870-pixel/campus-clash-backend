@@ -17,7 +17,8 @@ from bson import ObjectId
 
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/campus_clash")
 client = MongoClient(MONGO_URI)
-db = client.get_default_db()
+db_name = MONGO_URI.rsplit("/", 1)[-1].split("?")[0]
+db = client[db_name]
 
 
 def normalize_game(game):
