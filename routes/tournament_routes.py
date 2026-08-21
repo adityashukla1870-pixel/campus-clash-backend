@@ -860,6 +860,11 @@ def my_tournaments():
             if r.get("user_id") != user_id:
                 role = "teammate"
 
+            # Skip incomplete registrations: leader with no proof uploaded
+            has_proof = bool(r.get("screenshot")) or bool(r.get("ig_screenshots"))
+            if role == "leader" and status == "pending" and not has_proof:
+                continue
+
             data.append({
                 "id": str(t["_id"]),
                 "name": t["name"],
