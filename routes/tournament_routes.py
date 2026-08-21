@@ -373,6 +373,15 @@ def register_tournament(tournament_id):
         "tournament_id": ObjectId(tournament_id)
     })
 
+    # Check if this user is already a teammate in someone else's registration
+    if not existing and t.get("mode") == "squad":
+        already_teammate = mongo.db.registrations.find_one({
+            "tournament_id": ObjectId(tournament_id),
+            "team_members.user_id": user_id
+        })
+        if already_teammate:
+            return jsonify({"error": "You are already registered as a teammate in another team for this tournament"}), 400
+
     # Registration deadline only blocks brand-new sign-ups — someone who
     # already has a pending/approved registration can still come back to
     # this endpoint to fetch their payment code.
