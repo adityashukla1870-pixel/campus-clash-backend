@@ -744,6 +744,78 @@ def all_registrations():
     return jsonify(regs)
 
 
+# ---------------- ADMIN - INCOMPLETE REGISTRATIONS ----------------
+@tournament.route("/admin/incomplete-registrations", methods=["GET"])
+@admin_required
+def incomplete_registrations():
+    """Registrations where user registered but never uploaded proof.
+    These are leaders with payment_status=pending and no screenshot/ig_screenshots.
+    Admin can call them to remind about completing registration."""
+
+    regs = list(mongo.db.registrations.find({
+        "payment_status": "pending",
+        "$or": [
+            {"screenshot": None, "ig_screenshots": None},
+            {"screenshot": {"$exists": False}, "ig_screenshots": {"$exists": False}},
+        ]
+    }).sort("_id", -1))
+
+    result = []
+    for p in regs:
+        # Only include leader registrations (not teammate copies)
+        if p.get("team_members") and p.get("user_id"):
+            # Check if this is the leader's registration
+            leader_uid = p.get("user_id")
+            # Get leader's contact from team_leader object
+            team_leader = p.get("team_leader") or {}
+            contact = team_leader.get("contact")
+            leader_name = team_leader.get("name")
+
+            # Fetch user for email
+            user = mongo.db.users.find_one({"_id": safe_object_id(leader_uid)})
+            player_name = user.get("name") if user else leader_name or "Unknown"
+            player_email = user.get("email") if user else None
+            username = user.get("username") if user else None
+
+            t = mongo.db.tournaments.find_one({"_id": p["tournament_id"]})
+            result.append({
+                "_id": str(p["_id"]),
+                "tournament_name": t.get("name") if t else "Unknown",
+                "game": t.get("game") if t else "",
+                "entry_fee": t.get("entry_fee") if t else 0,
+                "team_name": p.get("team_name"),
+                "player_name": player_name,
+                "player_email": player_email,
+                "username": username,
+                "contact": contact,
+                "payment_code": p.get("payment_code"),
+                "registered_at": str(p.get("_id").generation_time) if p.get("_id") else None,
+            })
+        else:
+            # Solo registration
+            user = mongo.db.users.find_one({"_id": safe_object_id(p.get("user_id"))})
+            player_name = user.get("name") if user else "Unknown"
+            player_email = user.get("email") if user else None
+            username = user.get("username") if user else None
+
+            t = mongo.db.tournaments.find_one({"_id": p["tournament_id"]})
+            result.append({
+                "_id": str(p["_id"]),
+                "tournament_name": t.get("name") if t else "Unknown",
+                "game": t.get("game") if t else "",
+                "entry_fee": t.get("entry_fee") if t else 0,
+                "team_name": None,
+                "player_name": player_name,
+                "player_email": player_email,
+                "username": username,
+                "contact": None,
+                "payment_code": p.get("payment_code"),
+                "registered_at": str(p.get("_id").generation_time) if p.get("_id") else None,
+            })
+
+    return jsonify(result)
+
+
 # ---------------- ADMIN - APPROVE PAYMENT ----------------
 @tournament.route("/admin/approve/<registration_id>", methods=["POST"])
 @admin_required
