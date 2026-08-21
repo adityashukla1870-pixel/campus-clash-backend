@@ -719,6 +719,31 @@ def approved_payments():
     return jsonify(approved)
 
 
+# ---------------- ADMIN - ALL REGISTRATIONS ----------------
+@tournament.route("/admin/all-registrations", methods=["GET"])
+@admin_required
+def all_registrations():
+    """Every registration across all tournaments, regardless of proof status."""
+
+    regs = list(mongo.db.registrations.find().sort("_id", -1))
+
+    for p in regs:
+        p["_id"] = str(p["_id"])
+        p["tournament_id_raw"] = p["tournament_id"]
+        p["tournament_id"] = str(p["tournament_id"])
+
+        user = mongo.db.users.find_one({"_id": safe_object_id(p.get("user_id"))})
+        p["player_name"] = user.get("name") if user else "Unknown"
+        p["player_email"] = user.get("email") if user else None
+
+        t = mongo.db.tournaments.find_one({"_id": p["tournament_id_raw"]})
+        p["tournament_name"] = t.get("name") if t else "Unknown Tournament"
+        p["entry_fee"] = t.get("entry_fee") if t else None
+        del p["tournament_id_raw"]
+
+    return jsonify(regs)
+
+
 # ---------------- ADMIN - APPROVE PAYMENT ----------------
 @tournament.route("/admin/approve/<registration_id>", methods=["POST"])
 @admin_required
