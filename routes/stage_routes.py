@@ -121,16 +121,34 @@ def compute_pod_standings(pod_doc):
 
 
 def compute_match_mvp(results):
+    """Compute match MVP based on kills + placement points.
+
+    MVP score = team placement points + (player kills * kill_point_value)
+    Falls back to just kills if points data is unavailable.
+    """
     best = None
+    best_score = -1
     for r in results:
-        players = r.get("players") or [{"name": r["name"], "kills": r.get("kills", 0)}]
+        placement = r.get("placement", 0)
+        team_points = r.get("points", 0)
+        kills = r.get("kills", 0)
+        players = r.get("players") or [{"name": r["name"], "kills": kills}]
+
         for p in players:
-            if best is None or p.get("kills", 0) > best["kills"]:
+            p_kills = p.get("kills", 0)
+            # Score = player kills + team placement points bonus
+            # Player contribution: their kills * kill value (approximated from team total)
+            # + team placement credit so a player on a winning team gets bonus
+            score = p_kills * 10 + team_points
+            if best is None or score > best_score:
+                best_score = score
                 best = {
                     "name": p["name"],
                     "team_name": r["name"],
                     "registration_id": r["registration_id"],
-                    "kills": p.get("kills", 0)
+                    "kills": p_kills,
+                    "placement": placement,
+                    "score": score,
                 }
     return best
 
