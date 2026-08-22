@@ -307,6 +307,92 @@ def claim_username():
     return jsonify({"message": "Username claimed successfully", "username": username})
 
 
+# ── CHANGE USERNAME (once per 5 months) ──────────────────────────
+@auth.route("/change-username", methods=["POST"])
+@jwt_required()
+def change_username():
+    user_id = get_jwt_identity()
+    data = request.json or {}
+    new_username_raw = data.get("username")
+
+    if not new_username_raw:
+        return jsonify({"error": "Username is required"}), 400
+
+    new_username = _normalize_username(new_username_raw)
+    if not _is_valid_username(new_username):
+        return jsonify({"error": "Username must be 3-20 characters, lowercase letters, numbers, dots, hyphens, or underscores"}), 400
+
+    user = mongo.db.users.find_one({"_id": ObjectId(user_id)})
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    current_username = user.get("username", "")
+    if new_username == current_username:
+        return jsonify({"error": "This is already your username"}), 400
+
+    # Check 5-month cooldown
+    last_changed = user.get("username_changed_at")
+    if last_changed:
+        from datetime import datetime, timedelta
+        now = datetime.utcnow()
+        if isinstance(last_changed, str):
+            try:
+                last_changed = datetime.fromisoformat(last_changed.replace("Z", "+00:00")).replace(tzinfo=None)
+            except Exception:
+                last_changed = None
+        if last_changed and (now - last_changed) < timedelta(days=152):  # ~5 months
+            days_left = 152 - (now - last_changed).days
+            return jsonify({"error": f"You can change your username again in {days_left} days"}), 400
+
+    # Check if already taken by someone else
+    existing = mongo.db.users.find_one({"username": new_username})
+    if existing and str(existing["_id"]) != user_id:
+        return jsonify({"error": "Username is already taken"}), 400
+
+    # Update username
+    mongo.db.users.update_one(
+        {"_id": ObjectId(user_id)},
+        {"$set": {"username": new_username, "username_changed_at": datetime.utcnow()}}
+    )
+
+    return jsonify({"message": "Username changed successfully", "username": new_username})
+
+
+# ── CHECK USERNAME CHANGE AVAILABILITY ───────────────────────────
+@auth.route("/username-change-status", methods=["GET"])
+@jwt_required()
+def username_change_status():
+    user_id = get_jwt_identity()
+    user = mongo.db.users.find_one({"_id": ObjectId(user_id)})
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    last_changed = user.get("username_changed_at")
+    if not last_changed:
+        return jsonify({"can_change": True, "next_change_at": None})
+
+    from datetime import datetime, timedelta
+    now = datetime.utcnow()
+    if isinstance(last_changed, str):
+        try:
+            last_changed = datetime.fromisoformat(last_changed.replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            last_changed = None
+
+    if not last_changed:
+        return jsonify({"can_change": True, "next_change_at": None})
+
+    next_change = last_changed + timedelta(days=152)
+    can_change = now >= next_change
+    days_left = max(0, (next_change - now).days)
+
+    return jsonify({
+        "can_change": can_change,
+        "next_change_at": next_change.isoformat(),
+        "days_remaining": days_left,
+    })
+
+
 # ── FORGOT PASSWORD ─────────────────────────────────────────────
 @auth.route("/forgot-password", methods=["POST"])
 def forgot_password():
