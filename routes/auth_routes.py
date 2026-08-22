@@ -311,51 +311,53 @@ def claim_username():
 @auth.route("/change-username", methods=["POST"])
 @jwt_required()
 def change_username():
-    user_id = get_jwt_identity()
-    data = request.json or {}
-    new_username_raw = data.get("username")
+    try:
+        user_id = get_jwt_identity()
+        data = request.json or {}
+        new_username_raw = data.get("username")
 
-    if not new_username_raw:
-        return jsonify({"error": "Username is required"}), 400
+        if not new_username_raw:
+            return jsonify({"error": "Username is required"}), 400
 
-    new_username = _normalize_username(new_username_raw)
-    if not _is_valid_username(new_username):
-        return jsonify({"error": "Username must be 3-20 characters, lowercase letters, numbers, dots, hyphens, or underscores"}), 400
+        new_username = _normalize_username(new_username_raw)
+        if not _is_valid_username(new_username):
+            return jsonify({"error": "Username must be 3-20 characters, lowercase letters, numbers, dots, hyphens, or underscores"}), 400
 
-    user = mongo.db.users.find_one({"_id": ObjectId(user_id)})
-    if not user:
-        return jsonify({"error": "User not found"}), 404
+        user = mongo.db.users.find_one({"_id": ObjectId(user_id)})
+        if not user:
+            return jsonify({"error": "User not found"}), 404
 
-    current_username = user.get("username", "")
-    if new_username == current_username:
-        return jsonify({"error": "This is already your username"}), 400
+        current_username = user.get("username", "")
+        if new_username == current_username:
+            return jsonify({"error": "This is already your username"}), 400
 
-    # Check 5-month cooldown
-    last_changed = user.get("username_changed_at")
-    if last_changed:
-        from datetime import datetime, timedelta
-        now = datetime.utcnow()
-        if isinstance(last_changed, str):
-            try:
-                last_changed = datetime.fromisoformat(last_changed.replace("Z", "+00:00")).replace(tzinfo=None)
-            except Exception:
-                last_changed = None
-        if last_changed and (now - last_changed) < timedelta(days=152):  # ~5 months
-            days_left = 152 - (now - last_changed).days
-            return jsonify({"error": f"You can change your username again in {days_left} days"}), 400
+        # Check 5-month cooldown
+        last_changed = user.get("username_changed_at")
+        if last_changed:
+            now = datetime.utcnow()
+            if isinstance(last_changed, str):
+                try:
+                    last_changed = datetime.fromisoformat(last_changed.replace("Z", "+00:00")).replace(tzinfo=None)
+                except Exception:
+                    last_changed = None
+            if last_changed and (now - last_changed) < timedelta(days=152):
+                days_left = 152 - (now - last_changed).days
+                return jsonify({"error": f"You can change your username again in {days_left} days"}), 400
 
-    # Check if already taken by someone else
-    existing = mongo.db.users.find_one({"username": new_username})
-    if existing and str(existing["_id"]) != user_id:
-        return jsonify({"error": "Username is already taken"}), 400
+        # Check if already taken by someone else
+        existing = mongo.db.users.find_one({"username": new_username})
+        if existing and str(existing["_id"]) != user_id:
+            return jsonify({"error": "Username is already taken"}), 400
 
-    # Update username
-    mongo.db.users.update_one(
-        {"_id": ObjectId(user_id)},
-        {"$set": {"username": new_username, "username_changed_at": datetime.utcnow()}}
-    )
+        # Update username
+        mongo.db.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {"username": new_username, "username_changed_at": datetime.utcnow()}}
+        )
 
-    return jsonify({"message": "Username changed successfully", "username": new_username})
+        return jsonify({"message": "Username changed successfully", "username": new_username})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 # ── CHECK USERNAME CHANGE AVAILABILITY ───────────────────────────
