@@ -406,13 +406,18 @@ def release_cross_pod_room(match_id):
     room_id = data.get("room_id")
     password = data.get("password")
     start_time = data.get("start_time")
+    map_name = data.get("map")
 
     if not room_id or not password:
         return jsonify({"error": "Room ID and password are required"}), 400
 
+    update_fields = {"room_id": room_id, "room_password": password, "match_start_time": start_time}
+    if map_name:
+        update_fields["map"] = map_name
+
     mongo.db.cross_pod_matches.update_one(
         {"_id": m["_id"]},
-        {"$set": {"room_id": room_id, "room_password": password, "match_start_time": start_time}}
+        {"$set": update_fields}
     )
 
     # Notify participants from both pods
