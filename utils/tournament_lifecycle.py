@@ -69,6 +69,29 @@ def build_stage_seed_distribution(participants: List[Dict[str, Any]], pod_count:
     return pods
 
 
+def generate_round_robin_pairings(pod_ids: List[str], matches_per_pair: int = 1) -> List[Dict[str, Any]]:
+    """Generate round-robin pairings for cross-pod matches.
+
+    Takes a list of pod IDs and returns all unique pairings, each repeated
+    `matches_per_pair` times.  Each pairing dict has:
+      - pod_a, pod_b: the two pod IDs
+      - match_number: which occurrence (1-indexed) within that pairing
+
+    For 3 pods (A, B, C) with matches_per_pair=2:
+      [(A,B,1), (A,B,2), (B,C,1), (B,C,2), (A,C,1), (A,C,2)]
+    """
+    pairings: List[Dict[str, Any]] = []
+    for i in range(len(pod_ids)):
+        for j in range(i + 1, len(pod_ids)):
+            for m in range(1, matches_per_pair + 1):
+                pairings.append({
+                    "pod_a": pod_ids[i],
+                    "pod_b": pod_ids[j],
+                    "match_number": m,
+                })
+    return pairings
+
+
 def build_winner_update(winner: Dict[str, Any], stage_name: Optional[str] = None, source: str = "final_stage") -> Dict[str, Any]:
     """Create a normalized winner payload that can be shared by stage finalization and manual winner declaration."""
     if not winner:
