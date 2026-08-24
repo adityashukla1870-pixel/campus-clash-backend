@@ -28,8 +28,10 @@ def upsert_player_stats(
     tournaments_won_delta=0
 ):
     """Atomically update a player's per-game stats."""
+    from utils.player_stats import normalize_game
+    game_norm = normalize_game(game)
     mongo.db.player_stats.update_one(
-        {"user_id": user_id, "game": game},
+        {"user_id": user_id, "game": game_norm},
         {
             "$inc": {
                 "total_kills": kills_delta,
@@ -38,7 +40,7 @@ def upsert_player_stats(
             },
             "$setOnInsert": {
                 "user_id": user_id,
-                "game": game,
+                "game": game_norm,
             }
         },
         upsert=True

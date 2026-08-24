@@ -1014,38 +1014,87 @@ def tournament_stats(tournament_id):
     })
 
 
-# ---------------- TEMP MIGRATION: FIX KILL STATS ----------------
+# ---------------- TEMP MIGRATION: FIX KILL STATS + GAME NAMES ----------------
 @stage.route("/admin/fix-kill-stats", methods=["POST"])
 @admin_required
 def fix_kill_stats():
     """One-time migration: reset player_stats.total_kills and recompute
-    from all completed match results.  Safe to re-run (idempotent).
+    from ALL completed match results (stage_matches + cross_pod_matches).
+    Also fixes game name normalization (e.g. 'Free Fire' -> 'FREE_FIRE').
 
-    DELETE this endpoint after running once.
+    Safe to re-run (idempotent).
     """
     from bson.objectid import ObjectId as _OID
+
+    # 0. Fix game name normalization: merge misnamed docs into correct ones
+    game_name_fixes = {
+        "Free Fire": "FREE_FIRE",
+        "free fire": "FREE_FIRE",
+        "freefire": "FREE_FIRE",
+        "BGMI": "BGMI",
+        "bgmi": "BGMI",
+        "CODM": "CODM",
+        "codm": "CODM",
+    }
+    for wrong_name, correct_name in game_name_fixes.items():
+        if wrong_name == correct_name:
+            continue
+        bad_docs = list(mongo.db.player_stats.find({"game": wrong_name}))
+        for bad_doc in bad_docs:
+            uid = bad_doc.get("user_id")
+            good_doc = mongo.db.player_stats.find_one({"user_id": uid, "game": correct_name})
+            if good_doc:
+                # Merge: take the higher values
+                mongo.db.player_stats.update_one(
+                    {"_id": good_doc["_id"]},
+                    {"$inc": {
+                        "total_kills": bad_doc.get("total_kills", 0),
+                        "tournaments_played": bad_doc.get("tournaments_played", 0),
+                        "tournaments_won": bad_doc.get("tournaments_won", 0),
+                    }}
+                )
+                mongo.db.player_stats.delete_one({"_id": bad_doc["_id"]})
+            else:
+                # Just rename the game field
+                mongo.db.player_stats.update_one(
+                    {"_id": bad_doc["_id"]},
+                    {"$set": {"game": correct_name}}
+                )
 
     # 1. Reset all total_kills to 0
     mongo.db.player_stats.update_many({}, {"$set": {"total_kills": 0}})
 
-    # 2. Accumulate per-user kills from completed matches
+    # 2. Accumulate per-user kills from ALL completed matches
     kill_deltas = {}
     tp_counts = {}
 
-    matches = list(mongo.db.stage_matches.find({"status": "completed"}))
+    # Include BOTH stage_matches AND cross_pod_matches
+    all_matches = list(mongo.db.stage_matches.find({"status": "completed"}))
+    all_matches += list(mongo.db.cross_pod_matches.find({"status": "completed"}))
 
-    for m in matches:
+    for m in all_matches:
         tid = m.get("tournament_id")
         t = mongo.db.tournaments.find_one({"_id": tid}) if tid else None
         game = _normalize_game(t.get("game", "BGMI")) if t else "BGMI"
         tid_str = str(tid) if tid else None
 
-        pod = mongo.db.stage_pods.find_one({"_id": m.get("pod_id")}) if m.get("pod_id") else None
+        # For stage_matches, get pod participants for user_id mapping
         pod_user = {}
-        if pod:
-            for pt in pod.get("participants", []):
-                if pt.get("user_id"):
-                    pod_user[pt["registration_id"]] = pt["user_id"]
+        if m.get("pod_id"):
+            pod = mongo.db.stage_pods.find_one({"_id": m["pod_id"]})
+            if pod:
+                for pt in pod.get("participants", []):
+                    if pt.get("user_id"):
+                        pod_user[pt["registration_id"]] = pt["user_id"]
+
+        # For cross_pod_matches, get participants from both pods
+        if m.get("pod_a_id") and m.get("pod_b_id"):
+            for pod_id_field in ["pod_a_id", "pod_b_id"]:
+                pod = mongo.db.stage_pods.find_one({"_id": m[pod_id_field]})
+                if pod:
+                    for pt in pod.get("participants", []):
+                        if pt.get("user_id"):
+                            pod_user[pt["registration_id"]] = pt["user_id"]
 
         for res in m.get("results", []):
             rid = res.get("registration_id")
@@ -1109,6 +1158,6 @@ def fix_kill_stats():
         summary.append(f"{name}: +{delta} kills ({game})")
 
     return jsonify({
-        "message": f"Fixed {len(kill_deltas)} user+game pairs from {len(matches)} matches",
+        "message": f"Fixed {len(kill_deltas)} user+game pairs from {len(all_matches)} matches",
         "top_20": summary
     })
