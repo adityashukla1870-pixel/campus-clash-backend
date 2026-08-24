@@ -952,7 +952,10 @@ def delete_stage(stage_id):
 @jwt_required()
 def tournament_stats(tournament_id):
     tid = safe_object_id(tournament_id)
-    matches = list(mongo.db.stage_matches.find({"tournament_id": tid, "status": "completed"}))
+    # Include BOTH stage_matches AND cross_pod_matches
+    stage_matches = list(mongo.db.stage_matches.find({"tournament_id": tid, "status": "completed"}))
+    cross_pod_matches = list(mongo.db.cross_pod_matches.find({"tournament_id": tid, "status": "completed"}))
+    matches = stage_matches + cross_pod_matches
 
     team_totals = {}
     player_totals = {}

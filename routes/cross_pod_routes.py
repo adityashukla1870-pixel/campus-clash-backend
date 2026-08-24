@@ -114,6 +114,7 @@ def serialize_cross_pod_match(m):
         "room_id": m.get("room_id"),
         "room_password": m.get("room_password"),
         "match_start_time": m.get("match_start_time"),
+        "slot_assignments": m.get("slot_assignments", {}),
         "status": m.get("status", "scheduled"),
         "results": m.get("results", []),
         "mvp": m.get("mvp"),
@@ -407,13 +408,27 @@ def release_cross_pod_room(match_id):
     password = data.get("password")
     start_time = data.get("start_time")
     map_name = data.get("map")
+    slot_assignments = data.get("slot_assignments", {})
 
     if not room_id or not password:
         return jsonify({"error": "Room ID and password are required"}), 400
 
+    # Validate slot assignments (10 slots max)
+    if slot_assignments:
+        if not isinstance(slot_assignments, dict):
+            return jsonify({"error": "slot_assignments must be an object"}), 400
+        for slot, reg_id in slot_assignments.items():
+            try:
+                slot_num = int(slot)
+                if slot_num < 1 or slot_num > 10:
+                    return jsonify({"error": f"Invalid slot number: {slot}. Must be 1-10"}), 400
+            except ValueError:
+                return jsonify({"error": f"Invalid slot key: {slot}"}), 400
+
     update_fields = {"room_id": room_id, "room_password": password, "match_start_time": start_time}
     if map_name:
         update_fields["map"] = map_name
+    update_fields["slot_assignments"] = slot_assignments
 
     mongo.db.cross_pod_matches.update_one(
         {"_id": m["_id"]},
@@ -529,6 +544,12 @@ def submit_cross_pod_results(match_id):
 
         # Apply kill deltas
         _apply_kill_deltas(prev_results, results, t.get("game", ""))
+
+        # Increment tournaments_played for all participants
+        for r in results:
+            pt = name_lookup.get(r["registration_id"])
+            if pt and pt.get("user_id"):
+                increment_tournaments_played(mongo, pt["user_id"], t.get("game", ""))
 
         # Notify participants
         for r in results:
