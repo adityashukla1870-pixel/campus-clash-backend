@@ -609,6 +609,37 @@ def final_participants(tournament_id):
     })
 
 
+# ---------------- ADMIN - APPROVED TEAMS FOR SLOT ASSIGNMENT ----------------
+@tournament.route("/admin/<tournament_id>/approved-teams", methods=["GET"])
+@admin_required
+def approved_teams(tournament_id):
+    """Get approved teams for slot assignment in custom lobby."""
+    t = mongo.db.tournaments.find_one({"_id": safe_object_id(tournament_id)})
+    if not t:
+        return jsonify({"error": "Tournament not found"}), 404
+
+    registrations = list(mongo.db.registrations.find({
+        "tournament_id": ObjectId(tournament_id),
+        "payment_status": "approved"
+    }))
+
+    teams = []
+    for r in registrations:
+        user = mongo.db.users.find_one({"_id": safe_object_id(r.get("user_id"))})
+        teams.append({
+            "registration_id": str(r["_id"]),
+            "user_id": r.get("user_id"),
+            "team_name": r.get("team_name") or (user.get("name") if user else "Unknown"),
+            "team_leader": r.get("team_leader"),
+            "team_members": r.get("team_members", []),
+        })
+
+    return jsonify({
+        "tournament_name": t.get("name"),
+        "teams": teams
+    })
+
+
 @tournament.route("/admin/<tournament_id>/final-participants.csv", methods=["GET"])
 @admin_required
 def final_participants_csv(tournament_id):
@@ -991,6 +1022,7 @@ def release_room(tournament_id):
     room_id = data.get("room_id")
     password = data.get("password")
     start_time_raw = data.get("start_time")
+    slot_assignments = data.get("slot_assignments", {})
 
     start_time = None
     if start_time_raw:
@@ -1001,12 +1033,25 @@ def release_room(tournament_id):
         except (ValueError, AttributeError):
             return jsonify({"error": "Invalid start_time format"}), 400
 
+    # Validate slot assignments (10 slots max)
+    if slot_assignments:
+        if not isinstance(slot_assignments, dict):
+            return jsonify({"error": "slot_assignments must be an object"}), 400
+        for slot, reg_id in slot_assignments.items():
+            try:
+                slot_num = int(slot)
+                if slot_num < 1 or slot_num > 10:
+                    return jsonify({"error": f"Invalid slot number: {slot}. Must be 1-10"}), 400
+            except ValueError:
+                return jsonify({"error": f"Invalid slot key: {slot}"}), 400
+
     mongo.db.tournaments.update_one(
         {"_id": ObjectId(tournament_id)},
         {"$set":{
             "room_id": room_id,
             "room_password": password,
-            "match_start_time": start_time
+            "match_start_time": start_time,
+            "slot_assignments": slot_assignments
         }}
     )
 
@@ -1065,10 +1110,28 @@ def get_tournament_room(tournament_id):
     match_time = tournament.get("match_start_time")
     match_time_str = to_utc_iso(match_time) if hasattr(match_time, "isoformat") else (match_time if isinstance(match_time, str) else None)
 
+    # Build slot assignments with team names
+    slot_assignments = tournament.get("slot_assignments", {})
+    slots_with_teams = {}
+    if slot_assignments:
+        # Fetch team names for assigned registration IDs
+        reg_ids = list(slot_assignments.values())
+        registrations = list(mongo.db.registrations.find({
+            "_id": {"$in": [ObjectId(rid) for rid in reg_ids if safe_object_id(rid)]}
+        }))
+        reg_name_map = {str(r["_id"]): r.get("team_name") for r in registrations}
+        
+        for slot, reg_id in slot_assignments.items():
+            slots_with_teams[slot] = {
+                "registration_id": reg_id,
+                "team_name": reg_name_map.get(reg_id, "Unknown Team")
+            }
+
     return jsonify({
         "room_id": tournament.get("room_id"),
         "room_password": tournament.get("room_password"),
-        "match_start_time": match_time_str
+        "match_start_time": match_time_str,
+        "slot_assignments": slots_with_teams
     })
 
 @tournament.route("/admin/declare-winner", methods=["POST"])
