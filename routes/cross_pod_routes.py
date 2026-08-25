@@ -396,6 +396,34 @@ def add_cross_pod_match(rr_id):
 
 
 # ---------------- RELEASE ROOM FOR CROSS-POD MATCH ----------------
+@cross_pod.route("/matches/<match_id>/slots", methods=["POST"])
+@admin_required
+def update_cross_pod_slots(match_id):
+    m = mongo.db.cross_pod_matches.find_one({"_id": safe_object_id(match_id)})
+    if not m:
+        return jsonify({"error": "Match not found"}), 404
+
+    data = request.get_json(silent=True) or {}
+    slot_assignments = data.get("slot_assignments", {})
+
+    if not isinstance(slot_assignments, dict):
+        return jsonify({"error": "slot_assignments must be an object"}), 400
+    for slot, reg_id in slot_assignments.items():
+        try:
+            slot_num = int(slot)
+            if slot_num < 1 or slot_num > 10:
+                return jsonify({"error": f"Invalid slot: {slot}. Must be 1-10"}), 400
+        except ValueError:
+            return jsonify({"error": f"Invalid slot key: {slot}"}), 400
+
+    mongo.db.cross_pod_matches.update_one(
+        {"_id": m["_id"]},
+        {"$set": {"slot_assignments": slot_assignments}}
+    )
+
+    return jsonify({"message": "Slots updated successfully"})
+
+
 @cross_pod.route("/matches/<match_id>/room", methods=["POST"])
 @admin_required
 def release_cross_pod_room(match_id):

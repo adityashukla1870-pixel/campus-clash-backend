@@ -1011,6 +1011,34 @@ def my_tournaments():
 
     return jsonify(data)
 
+@tournament.route("/admin/update-slots/<tournament_id>", methods=["POST"])
+@admin_required
+def update_slots(tournament_id):
+    t = mongo.db.tournaments.find_one({"_id": ObjectId(tournament_id)})
+    if not t:
+        return jsonify({"error": "Tournament not found"}), 404
+
+    data = request.json or {}
+    slot_assignments = data.get("slot_assignments", {})
+
+    if not isinstance(slot_assignments, dict):
+        return jsonify({"error": "slot_assignments must be an object"}), 400
+    for slot, reg_id in slot_assignments.items():
+        try:
+            slot_num = int(slot)
+            if slot_num < 1 or slot_num > 10:
+                return jsonify({"error": f"Invalid slot: {slot}. Must be 1-10"}), 400
+        except ValueError:
+            return jsonify({"error": f"Invalid slot key: {slot}"}), 400
+
+    mongo.db.tournaments.update_one(
+        {"_id": ObjectId(tournament_id)},
+        {"$set": {"slot_assignments": slot_assignments}}
+    )
+
+    return jsonify({"message": "Slots updated successfully"})
+
+
 @tournament.route("/admin/release-room/<tournament_id>", methods=["POST"])
 @admin_required
 def release_room(tournament_id):
