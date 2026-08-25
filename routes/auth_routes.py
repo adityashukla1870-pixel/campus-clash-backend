@@ -271,6 +271,48 @@ def update_profile():
         {"$set": updates}
     )
 
+    # If name changed, propagate to registrations and match results
+    if "name" in updates:
+        new_name = updates["name"]
+
+        # Update in registrations.team_members
+        mongo.db.registrations.update_many(
+            {"team_members.user_id": user_id},
+            {"$set": {"team_members.$.name": new_name}}
+        )
+
+        # Update in registrations.team_leader
+        mongo.db.registrations.update_many(
+            {"team_leader.user_id": user_id},
+            {"$set": {"team_leader.name": new_name}}
+        )
+
+        # Update in stage_pods.participants
+        mongo.db.stage_pods.update_many(
+            {"participants.user_id": user_id},
+            {"$set": {"participants.$.name": new_name}}
+        )
+
+        # Update in stage_matches.results (player names)
+        mongo.db.stage_matches.update_many(
+            {"results.players.user_id": user_id},
+            {"$set": {"results.$.players.$[elem].name": new_name}},
+            array_filters=[{"elem.user_id": user_id}]
+        )
+
+        # Update in cross_pod_matches.results (player names)
+        mongo.db.cross_pod_matches.update_many(
+            {"results.players.user_id": user_id},
+            {"$set": {"results.$.players.$[elem].name": new_name}},
+            array_filters=[{"elem.user_id": user_id}]
+        )
+
+        # Update player_stats username
+        mongo.db.player_stats.update_many(
+            {"user_id": user_id},
+            {"$set": {"username": new_name}}
+        )
+
     return jsonify({"message": "Profile updated successfully"})
 
 
