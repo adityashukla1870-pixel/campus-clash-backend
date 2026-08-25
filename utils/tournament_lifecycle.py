@@ -74,9 +74,9 @@ def generate_round_robin_pairings(pod_ids: List[str], matches_per_pair: int = 1)
 
     Takes a list of pod IDs and returns all unique pairings, interleaved so that
     each day has one match from each pairing. For 3 pods with matches_per_pair=3:
-      Day 1: (A,B,1), (A,C,1), (B,C,1)
-      Day 2: (A,B,2), (A,C,2), (B,C,2)
-      Day 3: (A,B,3), (A,C,3), (B,C,3)
+      Day 1: (A,B,1), (A,C,2), (B,C,3)
+      Day 2: (B,C,4), (A,B,5), (A,C,6)
+      Day 3: (A,C,7), (B,C,8), (A,B,9)
 
     Each pairing dict has:
       - pod_a, pod_b: the two pod IDs
@@ -88,11 +88,16 @@ def generate_round_robin_pairings(pod_ids: List[str], matches_per_pair: int = 1)
         for j in range(i + 1, len(pod_ids)):
             pairs.append((pod_ids[i], pod_ids[j]))
 
-    # Interleave by day: for each day, take one match from each pair
+    # Interleave by day: rotate pairs each day so different matchups appear first
     pairings: List[Dict[str, Any]] = []
     match_number = 0
     for m in range(matches_per_pair):
-        for pair in pairs:
+        # Rotate pairs right by m positions each day
+        if m == 0:
+            rotated = pairs
+        else:
+            rotated = pairs[-m:] + pairs[:-m]
+        for pair in rotated:
             match_number += 1
             pairings.append({
                 "pod_a": pair[0],

@@ -729,3 +729,103 @@ def delete_round_robin(rr_id):
     mongo.db.cross_pod_matches.delete_many({"round_robin_id": rr["_id"]})
     mongo.db.cross_pod_round_robin.delete_one({"_id": rr["_id"]})
     return jsonify({"message": "Round robin deleted"})
+
+
+@cross_pod.route("/<rr_id>/fix-pairings", methods=["POST"])
+@jwt_required()
+def fix_round_robin_pairings(rr_id):
+    """Fix existing round-robin match pairings to follow the rotating day format
+    without deleting matches (preserves results).
+    
+    Day 1: AB, AC, BC  (matches 1-3, usually already correct)
+    Day 2: BC, AB, AC  (matches 4-6)
+    Day 3: AC, BC, AB  (matches 7-9)
+    """
+    admin_id = get_jwt_identity()
+    admin = mongo.db.users.find_one({"_id": ObjectId(admin_id)})
+    if not admin or admin.get("role") != "admin":
+        return jsonify({"error": "Admin access required"}), 403
+
+    rr = mongo.db.cross_pod_round_robin.find_one({"_id": safe_object_id(rr_id)})
+    if not rr:
+        return jsonify({"error": "Round robin not found"}), 404
+
+    pod_ids = rr.get("pod_ids", [])
+    if len(pod_ids) < 2:
+        return jsonify({"error": "Not enough pods"}), 400
+
+    # Build correct rotating pairings
+    pairs = []
+    for i in range(len(pod_ids)):
+        for j in range(i + 1, len(pod_ids)):
+            pairs.append((pod_ids[i], pod_ids[j]))
+
+    correct_pairings = []
+    match_number = 0
+    for m in range(rr.get("matches_per_pair", 1)):
+        rotated = pairs if m == 0 else pairs[-m:] + pairs[:-m]
+        for pair in rotated:
+            match_number += 1
+            correct_pairings.append({
+                "pod_a": pair[0],
+                "pod_b": pair[1],
+                "match_number": match_number,
+            })
+
+    # Get existing matches sorted by match_number
+    matches = list(mongo.db.cross_pod_matches.find(
+        {"round_robin_id": rr["_id"]}
+    ).sort("match_number", 1))
+
+    # Build pod name lookup
+    pod_map = {}
+    for pid in pod_ids:
+        pod = mongo.db.stage_pods.find_one({"_id": ObjectId(pid)})
+        if pod:
+            pod_map[pid] = pod.get("name", "Unknown")
+
+    updated = 0
+    skipped = 0
+    for i, match in enumerate(matches):
+        if i >= len(correct_pairings):
+            break
+
+        correct = correct_pairings[i]
+        new_pod_a_id = correct["pod_a"]
+        new_pod_b_id = correct["pod_b"]
+
+        # Skip matches that already have results (don't mess with played matches)
+        if match.get("results"):
+            skipped += 1
+            continue
+
+        # Check if pairings are already correct
+        old_pod_a = str(match.get("pod_a_id", ""))
+        old_pod_b = str(match.get("pod_b_id", ""))
+        if old_pod_a == new_pod_a_id and old_pod_b == new_pod_b_id:
+            continue
+
+        # Update the match
+        mongo.db.cross_pod_matches.update_one(
+            {"_id": match["_id"]},
+            {"$set": {
+                "pod_a_id": ObjectId(new_pod_a_id),
+                "pod_b_id": ObjectId(new_pod_b_id),
+                "pod_a_name": pod_map.get(new_pod_a_id, ""),
+                "pod_b_name": pod_map.get(new_pod_b_id, ""),
+            }}
+        )
+        updated += 1
+
+    # Also update the pairings stored in the round-robin doc
+    mongo.db.cross_pod_round_robin.update_one(
+        {"_id": rr["_id"]},
+        {"$set": {"pairings": correct_pairings}}
+    )
+
+    return jsonify({
+        "message": f"Fixed {updated} matches, skipped {skipped} (already played)",
+        "total_matches": len(matches),
+        "updated": updated,
+        "skipped": skipped
+    })
