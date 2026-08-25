@@ -102,6 +102,21 @@ def compute_match_mvp(results):
 
 
 def serialize_cross_pod_match(m):
+    raw_slots = m.get("slot_assignments", {})
+    resolved_slots = {}
+    if raw_slots:
+        reg_ids = [ObjectId(rid) for rid in raw_slots.values() if rid]
+        regs = {}
+        if reg_ids:
+            for r in mongo.db.registrations.find({"_id": {"$in": reg_ids}}):
+                regs[str(r["_id"])] = r
+        for slot, reg_id in raw_slots.items():
+            reg = regs.get(reg_id, {})
+            resolved_slots[str(slot)] = {
+                "registration_id": reg_id,
+                "team_name": reg.get("team_name", "Unknown")
+            }
+
     return {
         "id": str(m["_id"]),
         "round_robin_id": str(m["round_robin_id"]),
@@ -114,7 +129,7 @@ def serialize_cross_pod_match(m):
         "room_id": m.get("room_id"),
         "room_password": m.get("room_password"),
         "match_start_time": m.get("match_start_time"),
-        "slot_assignments": m.get("slot_assignments", {}),
+        "slot_assignments": resolved_slots,
         "status": m.get("status", "scheduled"),
         "results": m.get("results", []),
         "mvp": m.get("mvp"),
