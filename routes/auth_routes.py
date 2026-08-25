@@ -596,3 +596,89 @@ def admin_reset_password():
 
     name = target.get("name") or target.get("email") or target_user_id
     return jsonify({"message": f"Password reset for {name}", "user_id": target_user_id})
+
+
+@auth.route("/admin/change-in-game-name", methods=["POST"])
+@jwt_required()
+def admin_change_in_game_name():
+    """Admin can change a player's in-game name across all registrations, pods, and match results.
+    Body: {user_id, new_name}"""
+    admin_id = get_jwt_identity()
+    admin = mongo.db.users.find_one({"_id": ObjectId(admin_id)})
+    if not admin or admin.get("role") != "admin":
+        return jsonify({"error": "Admin access required"}), 403
+
+    data = request.json or {}
+    target_user_id = data.get("user_id")
+    new_name = (data.get("new_name") or "").strip()
+
+    if not target_user_id or not new_name:
+        return jsonify({"error": "user_id and new_name are required"}), 400
+
+    target = mongo.db.users.find_one({"_id": ObjectId(target_user_id)})
+    if not target:
+        return jsonify({"error": "User not found"}), 404
+
+    old_name = target.get("name", "")
+
+    # 1. Update user profile name
+    mongo.db.users.update_one(
+        {"_id": ObjectId(target_user_id)},
+        {"$set": {"name": new_name}}
+    )
+
+    # 2. Update registrations.team_members
+    mongo.db.registrations.update_many(
+        {"team_members.user_id": target_user_id},
+        {"$set": {"team_members.$.name": new_name}}
+    )
+
+    # 3. Update registrations.team_leader
+    mongo.db.registrations.update_many(
+        {"team_leader.user_id": target_user_id},
+        {"$set": {"team_leader.name": new_name}}
+    )
+
+    # 4. Update stage_pods.participants
+    mongo.db.stage_pods.update_many(
+        {"participants.user_id": target_user_id},
+        {"$set": {"participants.$.name": new_name}}
+    )
+
+    # 5. Update stage_matches.results — top-level player entry
+    mongo.db.stage_matches.update_many(
+        {"results.user_id": target_user_id},
+        {"$set": {"results.$.name": new_name}}
+    )
+
+    # 6. Update stage_matches.results.players — nested player entry
+    mongo.db.stage_matches.update_many(
+        {"results.players.user_id": target_user_id},
+        {"$set": {"results.$.players.$[elem].name": new_name}},
+        array_filters=[{"elem.user_id": target_user_id}]
+    )
+
+    # 7. Update cross_pod_matches.results — top-level player entry
+    mongo.db.cross_pod_matches.update_many(
+        {"results.user_id": target_user_id},
+        {"$set": {"results.$.name": new_name}}
+    )
+
+    # 8. Update cross_pod_matches.results.players — nested player entry
+    mongo.db.cross_pod_matches.update_many(
+        {"results.players.user_id": target_user_id},
+        {"$set": {"results.$.players.$[elem].name": new_name}},
+        array_filters=[{"elem.user_id": target_user_id}]
+    )
+
+    # 9. Update player_stats
+    mongo.db.player_stats.update_many(
+        {"user_id": target_user_id},
+        {"$set": {"username": new_name}}
+    )
+
+    return jsonify({
+        "message": f"In-game name changed from '{old_name}' to '{new_name}' across all data",
+        "old_name": old_name,
+        "new_name": new_name
+    })
