@@ -65,9 +65,17 @@ def get_roster_by_id(tournament_id):
         "payment_status": {"$nin": ["rejected", "disqualified"]}
     })
     roster = {}
+    seen_teams = set()
     for r in registrations:
+        # For squad mode: skip teammate registrations (only keep leader)
+        team_name = r.get("team_name")
+        if team_name:
+            if team_name in seen_teams:
+                continue
+            seen_teams.add(team_name)
+
         user = mongo.db.users.find_one({"_id": safe_object_id(r.get("user_id"))})
-        display_name = r.get("team_name") or (user.get("name") if user else "Unknown")
+        display_name = team_name or (user.get("name") if user else "Unknown")
         roster[str(r["_id"])] = {
             "registration_id": str(r["_id"]),
             "user_id": r.get("user_id"),
