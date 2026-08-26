@@ -229,17 +229,19 @@ def increment_tournaments_won_endpoint():
 @player_stats.route("/admin/reset-player-stats", methods=["POST"])
 @admin_required
 def reset_player_stats():
-    """Reset a player's leaderboard stats. Admin only.
+    """Reset specific stat for a player. Admin only.
 
     Expected payload:
     {
         "user_id": "the user id",
-        "game": "BGMI" | "FREE_FIRE" | "GLOBAL"  (optional, defaults to all games)
+        "stat": "tournaments_won" | "total_kills" | "tournaments_played",
+        "game": "BGMI" | "FREE_FIRE" | "GLOBAL"  (optional, defaults to GLOBAL)
     }
     """
     data = request.get_json(silent=True) or {}
     user_id = data.get("user_id")
-    game = data.get("game", "").strip().upper() if data.get("game") else None
+    stat = data.get("stat", "tournaments_won")
+    game = (data.get("game") or "GLOBAL").strip().upper()
 
     if not user_id:
         return jsonify({"error": "user_id is required"}), 400
@@ -248,22 +250,23 @@ def reset_player_stats():
     if not user:
         return jsonify({"error": "User not found"}), 404
 
-    # Build filter
-    query = {"user_id": user_id}
-    if game:
-        query["game"] = game
+    valid_stats = ["tournaments_won", "total_kills", "tournaments_played"]
+    if stat not in valid_stats:
+        return jsonify({"error": f"stat must be one of {valid_stats}"}), 400
 
-    # Delete player_stats entries
-    result = mongo.db.player_stats.delete_many(query)
+    # Update player_stats
+    mongo.db.player_stats.update_one(
+        {"user_id": user_id, "game": game},
+        {"$set": {stat: 0}}
+    )
 
-    # Also reset tournaments_won on the user document if clearing GLOBAL
-    if not game or game == "GLOBAL":
+    # Also sync tournaments_won on users doc
+    if stat == "tournaments_won" and game == "GLOBAL":
         mongo.db.users.update_one(
             {"_id": ObjectId(user_id)},
             {"$set": {"tournaments_won": 0}}
         )
 
     return jsonify({
-        "message": f"Reset {result.deleted_count} stat record(s) for {user.get('name', user.get('username', user_id))}",
-        "deleted_count": result.deleted_count
+        "message": f"Reset {stat} to 0 for {user.get('name', user.get('username', user_id))} ({game})"
     })
