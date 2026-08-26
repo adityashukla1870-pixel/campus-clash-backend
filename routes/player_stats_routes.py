@@ -20,6 +20,18 @@ def init_player_stats_routes(mongo_instance):
     global mongo
     mongo = mongo_instance
 
+
+def admin_required(fn):
+    @wraps(fn)
+    @jwt_required()
+    def wrapper(*args, **kwargs):
+        user_id = get_jwt_identity()
+        user = mongo.db.users.find_one({"_id": ObjectId(user_id)})
+        if not user or user.get("role") != "admin":
+            return jsonify({"error": "Admin access required"}), 403
+        return fn(*args, **kwargs)
+    return wrapper
+
 def upsert_player_stats(
     user_id,
     game,
@@ -209,4 +221,49 @@ def increment_tournaments_won_endpoint():
             "tournaments_played": updated.get("tournaments_played", 0),
             "tournaments_won": updated.get("tournaments_won", 0),
         }
+    })
+
+
+# ---- ADMIN: RESET PLAYER LEADERBOARD ----
+
+@player_stats.route("/admin/reset-player-stats", methods=["POST"])
+@admin_required
+def reset_player_stats():
+    """Reset a player's leaderboard stats. Admin only.
+
+    Expected payload:
+    {
+        "user_id": "the user id",
+        "game": "BGMI" | "FREE_FIRE" | "GLOBAL"  (optional, defaults to all games)
+    }
+    """
+    data = request.get_json(silent=True) or {}
+    user_id = data.get("user_id")
+    game = data.get("game", "").strip().upper() if data.get("game") else None
+
+    if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
+
+    user = mongo.db.users.find_one({"_id": ObjectId(user_id)})
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    # Build filter
+    query = {"user_id": user_id}
+    if game:
+        query["game"] = game
+
+    # Delete player_stats entries
+    result = mongo.db.player_stats.delete_many(query)
+
+    # Also reset tournaments_won on the user document if clearing GLOBAL
+    if not game or game == "GLOBAL":
+        mongo.db.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {"tournaments_won": 0}}
+        )
+
+    return jsonify({
+        "message": f"Reset {result.deleted_count} stat record(s) for {user.get('name', user.get('username', user_id))}",
+        "deleted_count": result.deleted_count
     })
