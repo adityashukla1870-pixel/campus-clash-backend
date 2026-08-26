@@ -365,10 +365,10 @@ def create_full_lobby(tournament_id):
             # Add full-lobby matches to existing round-robin
             rr_id = existing_rr["_id"]
 
-            # Delete ALL old matches at numbers 7-9 (both group and full-lobby) to start fresh
+            # Delete ALL old matches that would conflict (group or full-lobby, numbers 7+)
             mongo.db.cross_pod_matches.delete_many({
                 "round_robin_id": rr_id,
-                "match_number": {"$gte": 7, "$lte": 9}
+                "match_number": {"$gte": 7}
             })
 
             # Use match numbers 7, 8, 9
