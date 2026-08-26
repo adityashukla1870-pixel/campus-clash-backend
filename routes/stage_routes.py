@@ -62,7 +62,7 @@ def get_roster_by_id(tournament_id):
     """registration_id -> {registration_id, user_id, name, team_members, team_leader} for every approved entry."""
     registrations = mongo.db.registrations.find({
         "tournament_id": ObjectId(tournament_id),
-        "payment_status": "approved"
+        "payment_status": {"$nin": ["rejected", "disqualified"]}
     })
     roster = {}
     for r in registrations:

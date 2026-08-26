@@ -948,6 +948,107 @@ def reject_payment(registration_id):
     return jsonify({"message": "Payment Rejected"})
 
 
+# ---------------- ADMIN - DISQUALIFY TEAM ----------------
+@tournament.route("/admin/disqualify/<registration_id>", methods=["POST"])
+@admin_required
+def disqualify_team(registration_id):
+    reg = mongo.db.registrations.find_one({"_id": ObjectId(registration_id)})
+    if not reg:
+        return jsonify({"error": "Registration not found"}), 404
+
+    if reg.get("payment_status") == "disqualified":
+        return jsonify({"message": "Already disqualified"})
+
+    if reg.get("payment_status") != "approved":
+        return jsonify({"error": "Can only disqualify approved teams"}), 400
+
+    mongo.db.registrations.update_one(
+        {"_id": ObjectId(registration_id)},
+        {"$set": {"payment_status": "disqualified"}}
+    )
+
+    # Remove from tournament players array
+    mongo.db.tournaments.update_one(
+        {"_id": ObjectId(reg["tournament_id"])},
+        {"$pull": {"players": reg["user_id"]}}
+    )
+
+    t = mongo.db.tournaments.find_one({"_id": ObjectId(reg["tournament_id"])})
+    tname = t.get("name") if t else "a tournament"
+
+    # Notify leader
+    create_notification(
+        mongo,
+        reg["user_id"],
+        f"Your team \"{reg.get('team_name', 'Unknown')}\" has been disqualified from \"{tname}\".",
+        ntype="info",
+        tournament_id=str(reg["tournament_id"])
+    )
+
+    # Notify team members
+    for member in reg.get("team_members", []):
+        member_uid = member.get("user_id")
+        if member_uid and member_uid != reg["user_id"]:
+            create_notification(
+                mongo,
+                member_uid,
+                f"Your team \"{reg.get('team_name', 'Unknown')}\" has been disqualified from \"{tname}\".",
+                ntype="info",
+                tournament_id=str(reg["tournament_id"])
+            )
+
+    return jsonify({"message": "Team disqualified successfully"})
+
+
+# ---------------- ADMIN - RE-QUALIFY TEAM ----------------
+@tournament.route("/admin/re-qualify/<registration_id>", methods=["POST"])
+@admin_required
+def requalify_team(registration_id):
+    reg = mongo.db.registrations.find_one({"_id": ObjectId(registration_id)})
+    if not reg:
+        return jsonify({"error": "Registration not found"}), 404
+
+    if reg.get("payment_status") != "disqualified":
+        return jsonify({"error": "Team is not disqualified"}), 400
+
+    mongo.db.registrations.update_one(
+        {"_id": ObjectId(registration_id)},
+        {"$set": {"payment_status": "approved"}}
+    )
+
+    # Re-add to tournament players array
+    mongo.db.tournaments.update_one(
+        {"_id": ObjectId(reg["tournament_id"])},
+        {"$addToSet": {"players": reg["user_id"]}}
+    )
+
+    t = mongo.db.tournaments.find_one({"_id": ObjectId(reg["tournament_id"])})
+    tname = t.get("name") if t else "a tournament"
+
+    # Notify leader
+    create_notification(
+        mongo,
+        reg["user_id"],
+        f"Your team \"{reg.get('team_name', 'Unknown')}\" has been re-qualified for \"{tname}\".",
+        ntype="info",
+        tournament_id=str(reg["tournament_id"])
+    )
+
+    # Notify team members
+    for member in reg.get("team_members", []):
+        member_uid = member.get("user_id")
+        if member_uid and member_uid != reg["user_id"]:
+            create_notification(
+                mongo,
+                member_uid,
+                f"Your team \"{reg.get('team_name', 'Unknown')}\" has been re-qualified for \"{tname}\".",
+                ntype="info",
+                tournament_id=str(reg["tournament_id"])
+            )
+
+    return jsonify({"message": "Team re-qualified successfully"})
+
+
 # ---------------- MY TOURNAMENTS ----------------
 @tournament.route("/my-tournaments", methods=["GET"])
 @jwt_required()
