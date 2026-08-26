@@ -64,14 +64,18 @@ def get_roster_by_id(tournament_id):
         "payment_status": {"$nin": ["rejected", "disqualified"]}
     })
     roster = {}
-    seen_teams = set()
+    seen_keys = set()
     for r in registrations:
-        # For squad mode: skip teammate registrations (only keep leader)
         team_name = r.get("team_name")
-        if team_name:
-            if team_name in seen_teams:
-                continue
-            seen_teams.add(team_name)
+        team_members = r.get("team_members", []) or []
+
+        # Build dedup key: sorted member IDs catch duplicate squad registrations
+        member_ids = sorted([str(mid) for mid in team_members])
+        dedup_key = "|".join(member_ids) if member_ids else str(r.get("user_id", ""))
+
+        if dedup_key in seen_keys:
+            continue
+        seen_keys.add(dedup_key)
 
         user = mongo.db.users.find_one({"_id": safe_object_id(r.get("user_id"))})
         display_name = team_name or (user.get("name") if user else "Unknown")
@@ -79,7 +83,7 @@ def get_roster_by_id(tournament_id):
             "registration_id": str(r["_id"]),
             "user_id": r.get("user_id"),
             "name": display_name,
-            "team_members": r.get("team_members", []),
+            "team_members": team_members,
             "team_leader": r.get("team_leader")
         }
     return roster
@@ -360,11 +364,21 @@ def create_full_lobby(tournament_id):
         if existing_rr:
             # Add full-lobby matches to existing round-robin
             rr_id = existing_rr["_id"]
-            existing_match_count = mongo.db.cross_pod_matches.count_documents({"round_robin_id": rr_id})
 
+            # Delete ALL old matches at numbers 7-9 (both group and full-lobby) to start fresh
+            mongo.db.cross_pod_matches.delete_many({
+                "round_robin_id": rr_id,
+                "match_number": {"$gte": 7, "$lte": 9}
+            })
+
+            # Use match numbers 7, 8, 9
+            match_numbers = [7, 8, 9]
             maps = ["Bermuda", "Pulgatory", "Kalahari"]
             created_matches = []
+
             for i, map_name in enumerate(maps):
+                match_num = match_numbers[i]
+
                 match_doc = {
                     "round_robin_id": rr_id,
                     "tournament_id": ObjectId(tournament_id),
@@ -372,7 +386,7 @@ def create_full_lobby(tournament_id):
                     "pod_b_id": None,
                     "pod_a_name": "All Teams",
                     "pod_b_name": "All Teams",
-                    "match_number": existing_match_count + i + 1,
+                    "match_number": match_num,
                     "map": map_name,
                     "room_id": None,
                     "room_password": None,
@@ -411,6 +425,7 @@ def create_full_lobby(tournament_id):
             rr_doc["_id"] = result.inserted_id
 
             maps = ["Bermuda", "Pulgatory", "Kalahari"]
+            match_numbers = [7, 8, 9]
             created_matches = []
             for i, map_name in enumerate(maps):
                 match_doc = {
@@ -420,7 +435,7 @@ def create_full_lobby(tournament_id):
                     "pod_b_id": None,
                     "pod_a_name": "All Teams",
                     "pod_b_name": "All Teams",
-                    "match_number": i + 1,
+                    "match_number": match_numbers[i],
                     "map": map_name,
                     "room_id": None,
                     "room_password": None,

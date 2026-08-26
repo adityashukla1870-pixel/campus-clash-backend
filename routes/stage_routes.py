@@ -65,14 +65,18 @@ def get_roster_by_id(tournament_id):
         "payment_status": {"$nin": ["rejected", "disqualified"]}
     })
     roster = {}
-    seen_teams = set()
+    seen_keys = set()
     for r in registrations:
-        # For squad mode: skip teammate registrations (only keep leader)
         team_name = r.get("team_name")
-        if team_name:
-            if team_name in seen_teams:
-                continue
-            seen_teams.add(team_name)
+        team_members = r.get("team_members", []) or []
+
+        # Build dedup key: sorted member IDs catch duplicate squad registrations
+        member_ids = sorted([str(mid) for mid in team_members])
+        dedup_key = "|".join(member_ids) if member_ids else str(r.get("user_id", ""))
+
+        if dedup_key in seen_keys:
+            continue
+        seen_keys.add(dedup_key)
 
         user = mongo.db.users.find_one({"_id": safe_object_id(r.get("user_id"))})
         display_name = team_name or (user.get("name") if user else "Unknown")
@@ -80,7 +84,7 @@ def get_roster_by_id(tournament_id):
             "registration_id": str(r["_id"]),
             "user_id": r.get("user_id"),
             "name": display_name,
-            "team_members": r.get("team_members", []),
+            "team_members": team_members,
             "team_leader": r.get("team_leader")
         }
     return roster
