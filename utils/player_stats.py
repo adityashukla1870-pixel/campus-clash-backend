@@ -288,7 +288,7 @@ def get_global_leaderboard(mongo) -> List[Dict[str, Any]]:
     """
     stats_col = mongo.db.player_stats
     users_col = mongo.db.users
-    cursor = stats_col.find({"game": "GLOBAL"}).sort("tournaments_won", -1)
+    cursor = stats_col.find({"game": "GLOBAL", "tournaments_won": {"$gt": 0}}).sort("tournaments_won", -1)
     results = list(cursor)
     normalized = []
     for doc in results:
