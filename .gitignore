@@ -3,6 +3,9 @@
 .env.local
 .env.*.local
 
+# Scripts with credentials
+fix_password.py
+
 # Python
 __pycache__/
 *.py[cod]
@@ -72,3 +75,4 @@ instance/
 # Production
 .env.production
 .env.production.local
+.env.example 
