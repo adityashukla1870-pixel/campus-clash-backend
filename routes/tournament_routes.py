@@ -1065,11 +1065,17 @@ def my_tournaments():
     }))
 
     data = []
+    seen_tournaments = set()
 
     for r in registrations:
 
+        tid = r["tournament_id"]
+        if tid in seen_tournaments:
+            continue
+        seen_tournaments.add(tid)
+
         t = mongo.db.tournaments.find_one({
-            "_id": ObjectId(r["tournament_id"])
+            "_id": ObjectId(tid)
         })
 
         if t:
