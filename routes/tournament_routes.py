@@ -1110,10 +1110,14 @@ def my_tournaments():
                 "is_winner": is_winner,
                 "winner": winner_name,
                 "format": t.get("format", "quick"),
+                "mode": t.get("mode", "solo"),
+                "team_size": t.get("team_size", 1),
                 "banner_image": t.get("banner_image"),
                 "has_bracket": bool(t.get("bracket")),
                 "team_name": r.get("team_name"),
-                "role": role
+                "role": role,
+                "scheduled_time": _format_deadline_iso(t.get("scheduled_time")),
+                "registration_end_time": _format_deadline_iso(t.get("registration_end_time")),
             })
 
     return jsonify(data)
