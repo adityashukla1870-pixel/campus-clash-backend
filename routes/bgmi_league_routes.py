@@ -369,12 +369,12 @@ def submit_results(match_id):
             all_uids = []
             if reg.get("user_id"):
                 all_uids.append(reg["user_id"])
-            for m in reg.get("team_members", []):
-                if m.get("user_id"):
-                    all_uids.append(m["user_id"])
+            for member in reg.get("team_members", []):
+                if member.get("user_id"):
+                    all_uids.append(member["user_id"])
             for uid in all_uids:
-                upsert_player_stats(mongo, uid, tournament_id, r.get("kills", 0), r.get("points", 0))
-                increment_tournaments_played(mongo, uid)
+                upsert_player_stats(uid, "BGMI", kills_delta=r.get("kills", 0))
+                increment_tournaments_played(mongo, uid, "BGMI")
 
     # Notify participants
     registrations = mongo.db.registrations.find({
