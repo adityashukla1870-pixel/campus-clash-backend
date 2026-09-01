@@ -497,6 +497,69 @@ def get_standings(tournament_id):
     return jsonify(standings)
 
 
+# ---------------- BGMI LEAGUE STATS ----------------
+@bgmi_league.route("/tournament/<tournament_id>/stats", methods=["GET"])
+@jwt_required()
+def get_bgmi_stats(tournament_id):
+    """Return team frags, individual frags, and MVP leaderboard for BGMI league."""
+    league = mongo.db.bgmi_league.find_one({"tournament_id": safe_object_id(tournament_id)})
+    if not league:
+        return jsonify({"team_frags": [], "individual_frags": [], "mvp_leaderboard": []})
+
+    matches = list(mongo.db.bgmi_league_matches.find({
+        "league_id": league["_id"],
+        "status": "completed"
+    }))
+
+    team_totals = {}
+    player_totals = {}
+    mvp_counts = {}
+
+    for m in matches:
+        for r in m.get("results", []):
+            rid = r.get("registration_id")
+            if not rid:
+                continue
+
+            team = team_totals.setdefault(rid, {
+                "registration_id": rid, "name": r.get("name", "Unknown"),
+                "total_points": 0, "total_kills": 0, "matches_played": 0, "chicken_dinners": 0
+            })
+            team["total_points"] += r.get("points", 0)
+            team["total_kills"] += r.get("kills", 0)
+            team["matches_played"] += 1
+            if r.get("placement") == 1:
+                team["chicken_dinners"] += 1
+
+            players = r.get("players") or [{"name": r["name"], "kills": r.get("kills", 0)}]
+            for pl in players:
+                key = f"{rid}::{pl['name']}"
+                entry = player_totals.setdefault(key, {
+                    "name": pl["name"], "team_name": r["name"], "registration_id": rid, "total_kills": 0
+                })
+                entry["total_kills"] += pl.get("kills", 0)
+
+        mvp = m.get("mvp")
+        if mvp:
+            key = f"{mvp.get('registration_id', '')}::{mvp['name']}"
+            entry = mvp_counts.setdefault(key, {
+                "name": mvp["name"], "team_name": mvp.get("team_name", ""), "count": 0
+            })
+            entry["count"] += 1
+
+    def ranked(items, sort_key):
+        out = sorted(items, key=sort_key)
+        for i, x in enumerate(out):
+            x["rank"] = i + 1
+        return out
+
+    return jsonify({
+        "team_frags": ranked(list(team_totals.values()), lambda x: -x["total_kills"]),
+        "individual_frags": ranked(list(player_totals.values()), lambda x: -x["total_kills"]),
+        "mvp_leaderboard": ranked(list(mvp_counts.values()), lambda x: -x["count"]),
+    })
+
+
 # ---------------- FINALIZE LEAGUE ----------------
 @bgmi_league.route("/<league_id>/finalize", methods=["POST"])
 @admin_required
