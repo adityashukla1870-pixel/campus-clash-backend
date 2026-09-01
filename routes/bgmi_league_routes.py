@@ -458,14 +458,28 @@ def get_standings(tournament_id):
     if not league:
         return jsonify([])
 
-    matches = list(mongo.db.bgmi_league_matches.find({
-        "league_id": league["_id"],
-        "status": "completed"
+    all_matches = list(mongo.db.bgmi_league_matches.find({
+        "league_id": league["_id"]
     }))
+    completed_matches = [m for m in all_matches if m.get("status") == "completed"]
 
-    # Aggregate stats per team
+    # Initialize all teams from participants (so they show even before results)
     team_stats = {}
-    for m in matches:
+    for m in all_matches:
+        for p in m.get("participants", []):
+            rid = p.get("registration_id")
+            if rid and rid not in team_stats:
+                team_stats[rid] = {
+                    "registration_id": rid,
+                    "name": p.get("name", "Unknown"),
+                    "matches_played": 0,
+                    "total_kills": 0,
+                    "total_points": 0,
+                    "chicken_dinners": 0,
+                    "best_placement": 999,
+                }
+
+    for m in completed_matches:
         for r in m.get("results", []):
             reg_id = r.get("registration_id")
             if not reg_id:
@@ -506,16 +520,26 @@ def get_bgmi_stats(tournament_id):
     if not league:
         return jsonify({"team_frags": [], "individual_frags": [], "mvp_leaderboard": []})
 
-    matches = list(mongo.db.bgmi_league_matches.find({
-        "league_id": league["_id"],
-        "status": "completed"
+    all_matches = list(mongo.db.bgmi_league_matches.find({
+        "league_id": league["_id"]
     }))
+    completed_matches = [m for m in all_matches if m.get("status") == "completed"]
 
     team_totals = {}
     player_totals = {}
     mvp_counts = {}
 
-    for m in matches:
+    # Initialize all teams from participants
+    for m in all_matches:
+        for p in m.get("participants", []):
+            rid = p.get("registration_id")
+            if rid:
+                team_totals.setdefault(rid, {
+                    "registration_id": rid, "name": p.get("name", "Unknown"),
+                    "total_points": 0, "total_kills": 0, "matches_played": 0, "chicken_dinners": 0
+                })
+
+    for m in completed_matches:
         for r in m.get("results", []):
             rid = r.get("registration_id")
             if not rid:
