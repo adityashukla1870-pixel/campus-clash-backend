@@ -138,7 +138,7 @@ def create_league(tournament_id):
         league_id = result.inserted_id
 
         # Create matches
-        maps = ["Bermuda", "Pulgatory", "Kalahari", "Livik", "Sanhok"]
+        maps = ["Erangel", "Miramar", "Sanhok", "Vikendi", "Livik"]
         match_counter = 0
         created_matches = []
 
