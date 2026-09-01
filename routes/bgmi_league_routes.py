@@ -117,6 +117,7 @@ def create_league(tournament_id):
         data = request.get_json(silent=True) or {}
         name = data.get("name") or f"{t['name']} - League"
         matches_per_day = data.get("matches_per_day") or [3, 3, 3]
+        custom_maps = data.get("maps")  # optional: list of maps per match
 
         # Get all approved participants
         roster = get_roster(tournament_id)
@@ -138,14 +139,17 @@ def create_league(tournament_id):
         league_id = result.inserted_id
 
         # Create matches
-        maps = ["Erangel", "Miramar", "Sanhok", "Vikendi", "Livik"]
+        bgmi_maps = ["Erangel", "Miramar", "Sanhok", "Vikendi", "Livik"]
         match_counter = 0
         created_matches = []
 
         for day_num, count in enumerate(matches_per_day, 1):
             for i in range(count):
                 match_counter += 1
-                map_name = maps[(match_counter - 1) % len(maps)]
+                if custom_maps and match_counter <= len(custom_maps):
+                    map_name = custom_maps[match_counter - 1]
+                else:
+                    map_name = bgmi_maps[(match_counter - 1) % len(bgmi_maps)]
 
                 match_doc = {
                     "league_id": league_id,
@@ -411,6 +415,38 @@ def get_match(match_id):
     if not match:
         return jsonify({"error": "Match not found"}), 404
     return jsonify(serialize_match(match))
+
+
+# ---------------- BULK UPDATE MAPS ----------------
+@bgmi_league.route("/<league_id>/maps", methods=["PUT"])
+@admin_required
+def update_maps(league_id):
+    """Update maps for all matches in a league.
+    Expects JSON: { "maps": { "1": "Erangel", "2": "Miramar", ... } }
+    Keys are match numbers (as strings), values are map names.
+    """
+    data = request.get_json(silent=True) or {}
+    maps = data.get("maps", {})
+
+    league = mongo.db.bgmi_league.find_one({"_id": safe_object_id(league_id)})
+    if not league:
+        return jsonify({"error": "League not found"}), 404
+
+    updated = 0
+    for match_num_str, map_name in maps.items():
+        try:
+            match_num = int(match_num_str)
+        except ValueError:
+            continue
+        if not map_name or not isinstance(map_name, str):
+            continue
+        mongo.db.bgmi_league_matches.update_one(
+            {"league_id": league["_id"], "match_number": match_num},
+            {"$set": {"map": map_name.strip()}}
+        )
+        updated += 1
+
+    return jsonify({"message": f"Updated maps for {updated} matches"})
 
 
 # ---------------- STANDINGS ----------------
