@@ -325,12 +325,13 @@ def create_round_robin(tournament_id):
 @cross_pod.route("/<tournament_id>/create-full-lobby", methods=["POST"])
 @admin_required
 def create_full_lobby(tournament_id):
-    """Create 3 full-lobby matches where all 12 teams play together (no group system).
-    Used for final day when groups are eliminated.
+    """Create full-lobby matches where all teams play together (no group system).
+    Used for league/tournament format where every match has all teams.
 
     Expects JSON:
-      - stage_id: the stage whose roster to use
-      - name: e.g. "Final Day - Full Lobby"
+      - stage_id (optional): the stage whose roster to use
+      - name: e.g. "Day 1 - Full Lobby"
+      - match_count (optional): number of matches to create (default 3)
     """
     try:
         t = mongo.db.tournaments.find_one({"_id": safe_object_id(tournament_id)})
@@ -339,14 +340,8 @@ def create_full_lobby(tournament_id):
 
         data = request.get_json(silent=True) or {}
         stage_id = data.get("stage_id")
-        name = data.get("name") or "Final Day - Full Lobby"
-
-        if not stage_id:
-            return jsonify({"error": "stage_id is required"}), 400
-
-        stage = mongo.db.tournament_stages.find_one({"_id": safe_object_id(stage_id)})
-        if not stage:
-            return jsonify({"error": "Stage not found"}), 404
+        name = data.get("name") or "Full Lobby"
+        match_count = data.get("match_count") or 3
 
         # Get all approved (non-disqualified) participants
         roster = get_roster_by_id(tournament_id)
@@ -355,29 +350,29 @@ def create_full_lobby(tournament_id):
         if len(participants) < 2:
             return jsonify({"error": "Need at least 2 approved participants"}), 400
 
-        # Check if there's an existing round-robin for this stage
-        existing_rr = mongo.db.cross_pod_round_robin.find_one({
-            "tournament_id": ObjectId(tournament_id),
-            "stage_id": ObjectId(stage_id)
-        })
+        # Determine slot limit based on team count
+        slot_limit = max(len(participants), 10)
+
+        # Check if there's an existing round-robin for this stage (or tournament-level)
+        query = {"tournament_id": ObjectId(tournament_id)}
+        if stage_id:
+            query["stage_id"] = ObjectId(stage_id)
+        else:
+            query["stage_id"] = {"$exists": False}
+
+        existing_rr = mongo.db.cross_pod_round_robin.find_one(query)
 
         if existing_rr:
-            # Add full-lobby matches to existing round-robin
             rr_id = existing_rr["_id"]
+            existing_count = mongo.db.cross_pod_matches.count_documents({"round_robin_id": rr_id})
+            start_num = existing_count + 1
 
-            # Delete ALL old matches that would conflict (group or full-lobby, numbers 7+)
-            mongo.db.cross_pod_matches.delete_many({
-                "round_robin_id": rr_id,
-                "match_number": {"$gte": 7}
-            })
-
-            # Use match numbers 7, 8, 9
-            match_numbers = [7, 8, 9]
-            maps = ["Bermuda", "Pulgatory", "Kalahari"]
+            maps = ["Bermuda", "Pulgatory", "Kalahari", "Livik", "Sanhok"]
             created_matches = []
 
-            for i, map_name in enumerate(maps):
-                match_num = match_numbers[i]
+            for i in range(match_count):
+                match_num = start_num + i
+                map_name = maps[i % len(maps)]
 
                 match_doc = {
                     "round_robin_id": rr_id,
@@ -392,7 +387,7 @@ def create_full_lobby(tournament_id):
                     "room_password": None,
                     "match_start_time": None,
                     "full_lobby": True,
-                    "slot_limit": 12,
+                    "slot_limit": slot_limit,
                     "participants": participants,
                     "status": "scheduled",
                     "results": [],
@@ -409,11 +404,13 @@ def create_full_lobby(tournament_id):
             })
         else:
             # Create new round-robin with full-lobby matches only
-            pod_ids = [str(p["_id"]) for p in list(mongo.db.stage_pods.find({"stage_id": stage["_id"]}))]
+            pod_ids = []
+            if stage_id:
+                pod_ids = [str(p["_id"]) for p in list(mongo.db.stage_pods.find({"stage_id": safe_object_id(stage_id)}))]
 
             rr_doc = {
                 "tournament_id": ObjectId(tournament_id),
-                "stage_id": ObjectId(stage_id),
+                "stage_id": ObjectId(stage_id) if stage_id else None,
                 "name": name,
                 "pod_ids": pod_ids,
                 "matches_per_pair": 0,
@@ -424,10 +421,11 @@ def create_full_lobby(tournament_id):
             result = mongo.db.cross_pod_round_robin.insert_one(rr_doc)
             rr_doc["_id"] = result.inserted_id
 
-            maps = ["Bermuda", "Pulgatory", "Kalahari"]
-            match_numbers = [7, 8, 9]
+            maps = ["Bermuda", "Pulgatory", "Kalahari", "Livik", "Sanhok"]
             created_matches = []
-            for i, map_name in enumerate(maps):
+            for i in range(match_count):
+                match_num = i + 1
+                map_name = maps[i % len(maps)]
                 match_doc = {
                     "round_robin_id": rr_doc["_id"],
                     "tournament_id": ObjectId(tournament_id),
@@ -435,13 +433,13 @@ def create_full_lobby(tournament_id):
                     "pod_b_id": None,
                     "pod_a_name": "All Teams",
                     "pod_b_name": "All Teams",
-                    "match_number": match_numbers[i],
+                    "match_number": match_num,
                     "map": map_name,
                     "room_id": None,
                     "room_password": None,
                     "match_start_time": None,
                     "full_lobby": True,
-                    "slot_limit": 12,
+                    "slot_limit": slot_limit,
                     "participants": participants,
                     "status": "scheduled",
                     "results": [],
