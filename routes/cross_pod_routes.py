@@ -329,9 +329,9 @@ def create_full_lobby(tournament_id):
     Used for league/tournament format where every match has all teams.
 
     Expects JSON:
-      - stage_id (optional): the stage whose roster to use
+      - stage_id: the stage whose roster to use
       - name: e.g. "Day 1 - Full Lobby"
-      - match_count (optional): number of matches to create (default 3)
+      - match_count (optional): number of matches to create (default 3, max 3)
     """
     try:
         t = mongo.db.tournaments.find_one({"_id": safe_object_id(tournament_id)})
@@ -341,7 +341,7 @@ def create_full_lobby(tournament_id):
         data = request.get_json(silent=True) or {}
         stage_id = data.get("stage_id")
         name = data.get("name") or "Full Lobby"
-        match_count = data.get("match_count") or 3
+        match_count = min(int(data.get("match_count") or 3), 3)  # Max 3 matches
 
         # Get all approved (non-disqualified) participants
         roster = get_roster_by_id(tournament_id)
@@ -350,8 +350,8 @@ def create_full_lobby(tournament_id):
         if len(participants) < 2:
             return jsonify({"error": "Need at least 2 approved participants"}), 400
 
-        # Determine slot limit based on team count
-        slot_limit = max(len(participants), 10)
+        # Hardcoded 12 slots
+        slot_limit = 12
 
         # Check if there's an existing round-robin for this stage (or tournament-level)
         query = {"tournament_id": ObjectId(tournament_id)}

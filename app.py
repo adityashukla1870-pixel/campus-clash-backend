@@ -14,6 +14,7 @@ from routes.cross_pod_routes import cross_pod, init_cross_pod_routes
 from routes.avatar_routes import avatars, init_avatar_routes
 from routes.player_stats_routes import player_stats, init_player_stats_routes
 from routes.feedback_routes import feedbacks, init_feedback_routes
+from routes.bgmi_league_routes import bgmi_league, init_bgmi_league_routes
 from chat_events import register_chat_events
 from flask import send_from_directory, request, make_response
 
@@ -42,6 +43,7 @@ init_cross_pod_routes(mongo)
 init_avatar_routes(mongo)
 init_player_stats_routes(mongo)
 init_feedback_routes(mongo)
+init_bgmi_league_routes(mongo)
 register_chat_events(socketio, mongo)
 
 # Register blueprints
@@ -54,6 +56,7 @@ app.register_blueprint(cross_pod, url_prefix="/cross-pod")
 app.register_blueprint(avatars, url_prefix="/avatars")
 app.register_blueprint(player_stats, url_prefix="/stats")
 app.register_blueprint(feedbacks, url_prefix="/feedbacks")
+app.register_blueprint(bgmi_league, url_prefix="/bgmi-league")
 
 @app.before_request
 def handle_options_preflight():

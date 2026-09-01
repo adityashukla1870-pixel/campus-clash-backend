@@ -1172,17 +1172,15 @@ def release_room(tournament_id):
         except (ValueError, AttributeError):
             return jsonify({"error": "Invalid start_time format"}), 400
 
-    # Validate slot assignments (match max_players or team count)
-    t = mongo.db.tournaments.find_one({"_id": ObjectId(tournament_id)})
-    slot_limit = t.get("max_players", 10) if t else 10
+    # Validate slot assignments (hardcoded 10)
     if slot_assignments:
         if not isinstance(slot_assignments, dict):
             return jsonify({"error": "slot_assignments must be an object"}), 400
         for slot, reg_id in slot_assignments.items():
             try:
                 slot_num = int(slot)
-                if slot_num < 1 or slot_num > slot_limit:
-                    return jsonify({"error": f"Invalid slot number: {slot}. Must be 1-{slot_limit}"}), 400
+                if slot_num < 1 or slot_num > 10:
+                    return jsonify({"error": f"Invalid slot number: {slot}. Must be 1-10"}), 400
             except ValueError:
                 return jsonify({"error": f"Invalid slot key: {slot}"}), 400
 
@@ -1196,8 +1194,7 @@ def release_room(tournament_id):
         }}
     )
 
-    if not t:
-        t = mongo.db.tournaments.find_one({"_id": ObjectId(tournament_id)})
+    t = mongo.db.tournaments.find_one({"_id": ObjectId(tournament_id)})
     participants = mongo.db.registrations.find({
         "tournament_id": ObjectId(tournament_id),
         "payment_status": {"$in": ["approved", "teammate"]}
