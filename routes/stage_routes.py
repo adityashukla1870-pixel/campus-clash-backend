@@ -1080,9 +1080,10 @@ def fix_kill_stats():
     kill_deltas = {}
     tp_counts = {}
 
-    # Include BOTH stage_matches AND cross_pod_matches
+    # Include stage_matches, cross_pod_matches, AND bgmi_league_matches
     all_matches = list(mongo.db.stage_matches.find({"status": "completed"}))
     all_matches += list(mongo.db.cross_pod_matches.find({"status": "completed"}))
+    all_matches += list(mongo.db.bgmi_league_matches.find({"status": "completed"}))
 
     for m in all_matches:
         tid = m.get("tournament_id")
@@ -1108,12 +1109,38 @@ def fix_kill_stats():
                         if pt.get("user_id"):
                             pod_user[pt["registration_id"]] = pt["user_id"]
 
+        # For bgmi_league_matches, get user_id mapping from match participants
+        if m.get("participants"):
+            for pt in m["participants"]:
+                if pt.get("user_id"):
+                    pod_user[pt["registration_id"]] = pt["user_id"]
+                    # Also map member user_ids by name
+                    for member in pt.get("team_members", []):
+                        if member.get("user_id"):
+                            pod_user[f"{pt['registration_id']}::{member.get('name', '')}"] = member["user_id"]
+
         for res in m.get("results", []):
             rid = res.get("registration_id")
             players = res.get("players") or []
             if players:
                 for pl in players:
                     uid = pl.get("user_id")
+                    # If no user_id in player, look up by name from participants
+                    if not uid and m.get("participants"):
+                        pl_name = pl.get("name", "").strip().lower()
+                        for pt in m["participants"]:
+                            # Check leader
+                            leader = pt.get("team_leader", {})
+                            if leader.get("name", "").strip().lower() == pl_name and pt.get("user_id"):
+                                uid = pt["user_id"]
+                                break
+                            # Check team members
+                            for member in pt.get("team_members", []):
+                                if member.get("name", "").strip().lower() == pl_name and member.get("user_id"):
+                                    uid = member["user_id"]
+                                    break
+                            if uid:
+                                break
                     if not uid:
                         continue
                     kills = pl.get("kills", 0) or 0

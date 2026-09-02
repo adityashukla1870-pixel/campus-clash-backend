@@ -362,19 +362,34 @@ def submit_results(match_id):
         }}
     )
 
-    # Update player stats
+    # Update player stats — use per-player kills, NOT team kills
     for r in processed_results:
         reg = mongo.db.registrations.find_one({"_id": safe_object_id(r["registration_id"])})
-        if reg:
-            all_uids = []
-            if reg.get("user_id"):
-                all_uids.append(reg["user_id"])
-            for member in reg.get("team_members", []):
-                if member.get("user_id"):
-                    all_uids.append(member["user_id"])
-            for uid in all_uids:
-                upsert_player_stats(uid, "BGMI", kills_delta=r.get("kills", 0))
-                increment_tournaments_played(mongo, uid, "BGMI")
+        if not reg:
+            continue
+
+        # Build name -> kills map from players array
+        players = r.get("players", [])
+        player_kills_map = {}
+        for pl in players:
+            player_kills_map[pl.get("name", "").strip().lower()] = pl.get("kills", 0)
+
+        # Leader
+        leader = reg.get("team_leader", {})
+        leader_name = leader.get("name", "").strip().lower()
+        if reg.get("user_id"):
+            leader_kills = player_kills_map.get(leader_name, 0)
+            upsert_player_stats(reg["user_id"], "BGMI", kills_delta=leader_kills)
+            increment_tournaments_played(mongo, reg["user_id"], "BGMI")
+
+        # Team members
+        for member in reg.get("team_members", []):
+            member_uid = member.get("user_id")
+            member_name = member.get("name", "").strip().lower()
+            if member_uid:
+                member_kills = player_kills_map.get(member_name, 0)
+                upsert_player_stats(member_uid, "BGMI", kills_delta=member_kills)
+                increment_tournaments_played(mongo, member_uid, "BGMI")
 
     # Notify participants
     registrations = mongo.db.registrations.find({
