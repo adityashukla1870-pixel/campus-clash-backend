@@ -526,6 +526,14 @@ def get_standings(tournament_id):
             team_stats[rid]["total_points"] -= pen.get("points", 0)
             team_stats[rid]["penalties"] = team_stats[rid].get("penalties", 0) + pen.get("points", 0)
 
+    # Apply bonuses
+    bonuses = list(mongo.db.bgmi_league_bonuses.find({"league_id": league["_id"]}))
+    for bon in bonuses:
+        rid = str(bon.get("registration_id", ""))
+        if rid in team_stats:
+            team_stats[rid]["total_points"] += bon.get("points", 0)
+            team_stats[rid]["bonuses"] = team_stats[rid].get("bonuses", 0) + bon.get("points", 0)
+
     # Sort by total_points, then total_kills
     standings = sorted(team_stats.values(), key=lambda x: (-x["total_points"], -x["total_kills"]))
     for i, s in enumerate(standings):
@@ -613,6 +621,85 @@ def delete_penalty(league_id, penalty_id):
         return jsonify({"error": "Penalty not found"}), 404
     mongo.db.bgmi_league_penalties.delete_one({"_id": penalty["_id"]})
     return jsonify({"message": "Penalty removed, points refunded"})
+
+
+# ---------------- ADD BONUS POINTS ----------------
+@bgmi_league.route("/<league_id>/bonus", methods=["POST"])
+@admin_required
+def add_bonus(league_id):
+    """Give bonus points to a team.
+    Expects JSON: { registration_id, points, reason }
+    """
+    data = request.get_json(silent=True) or {}
+    reg_id = data.get("registration_id")
+    points = data.get("points", 0)
+    reason = data.get("reason", "")
+
+    if not reg_id:
+        return jsonify({"error": "registration_id required"}), 400
+    if not points or points <= 0:
+        return jsonify({"error": "Points must be positive"}), 400
+    if not reason:
+        return jsonify({"error": "Reason required"}), 400
+
+    league = mongo.db.bgmi_league.find_one({"_id": safe_object_id(league_id)})
+    if not league:
+        return jsonify({"error": "League not found"}), 404
+
+    bonus_doc = {
+        "league_id": league["_id"],
+        "tournament_id": league["tournament_id"],
+        "registration_id": reg_id,
+        "points": points,
+        "reason": reason,
+        "created_at": datetime.utcnow(),
+    }
+    mongo.db.bgmi_league_bonuses.insert_one(bonus_doc)
+
+    reg = mongo.db.registrations.find_one({"_id": safe_object_id(reg_id)})
+    team_name = reg.get("team_name") or reg.get("player_name", "Unknown") if reg else "Unknown"
+
+    return jsonify({"message": f"Added {points} bonus points to {team_name}", "team_name": team_name})
+
+
+# ---------------- GET BONUSES ----------------
+@bgmi_league.route("/<league_id>/bonuses", methods=["GET"])
+@jwt_required()
+def get_bonuses(league_id):
+    """Get all bonuses for a league."""
+    league = mongo.db.bgmi_league.find_one({"_id": safe_object_id(league_id)})
+    if not league:
+        return jsonify([])
+
+    bonuses = list(mongo.db.bgmi_league_bonuses.find(
+        {"league_id": league["_id"]}
+    ).sort("created_at", -1))
+
+    result = []
+    for b in bonuses:
+        reg = mongo.db.registrations.find_one({"_id": b.get("registration_id")})
+        result.append({
+            "id": str(b["_id"]),
+            "registration_id": str(b["registration_id"]),
+            "team_name": reg.get("team_name") or reg.get("player_name", "Unknown") if reg else "Unknown",
+            "points": b["points"],
+            "reason": b["reason"],
+            "created_at": b["created_at"].isoformat() if b.get("created_at") else None,
+        })
+
+    return jsonify(result)
+
+
+# ---------------- DELETE BONUS ----------------
+@bgmi_league.route("/<league_id>/bonuses/<bonus_id>", methods=["DELETE"])
+@admin_required
+def delete_bonus(league_id, bonus_id):
+    """Remove a bonus (deduct back)."""
+    bonus = mongo.db.bgmi_league_bonuses.find_one({"_id": safe_object_id(bonus_id)})
+    if not bonus:
+        return jsonify({"error": "Bonus not found"}), 404
+    mongo.db.bgmi_league_bonuses.delete_one({"_id": bonus["_id"]})
+    return jsonify({"message": "Bonus removed, points deducted back"})
 
 
 # ---------------- BGMI LEAGUE STATS ----------------
