@@ -518,12 +518,101 @@ def get_standings(tournament_id):
             if r.get("placement", 999) < ts["best_placement"]:
                 ts["best_placement"] = r["placement"]
 
+    # Apply penalties
+    penalties = list(mongo.db.bgmi_league_penalties.find({"league_id": league["_id"]}))
+    for pen in penalties:
+        rid = str(pen.get("registration_id", ""))
+        if rid in team_stats:
+            team_stats[rid]["total_points"] -= pen.get("points", 0)
+            team_stats[rid]["penalties"] = team_stats[rid].get("penalties", 0) + pen.get("points", 0)
+
     # Sort by total_points, then total_kills
     standings = sorted(team_stats.values(), key=lambda x: (-x["total_points"], -x["total_kills"]))
     for i, s in enumerate(standings):
         s["rank"] = i + 1
 
     return jsonify(standings)
+
+
+# ---------------- DEDUCT POINTS (PENALTY) ----------------
+@bgmi_league.route("/<league_id>/penalty", methods=["POST"])
+@admin_required
+def deduct_points(league_id):
+    """Deduct points from a team as penalty.
+    Expects JSON: { registration_id, points, reason }
+    """
+    data = request.get_json(silent=True) or {}
+    reg_id = data.get("registration_id")
+    points = data.get("points", 0)
+    reason = data.get("reason", "")
+
+    if not reg_id:
+        return jsonify({"error": "registration_id required"}), 400
+    if not points or points <= 0:
+        return jsonify({"error": "Points must be positive"}), 400
+    if not reason:
+        return jsonify({"error": "Reason required"}), 400
+
+    league = mongo.db.bgmi_league.find_one({"_id": safe_object_id(league_id)})
+    if not league:
+        return jsonify({"error": "League not found"}), 404
+
+    # Store penalty
+    penalty_doc = {
+        "league_id": league["_id"],
+        "tournament_id": league["tournament_id"],
+        "registration_id": reg_id,
+        "points": points,
+        "reason": reason,
+        "created_at": datetime.utcnow(),
+    }
+    mongo.db.bgmi_league_penalties.insert_one(penalty_doc)
+
+    # Get team name
+    reg = mongo.db.registrations.find_one({"_id": safe_object_id(reg_id)})
+    team_name = reg.get("team_name") or reg.get("player_name", "Unknown") if reg else "Unknown"
+
+    return jsonify({"message": f"Deducted {points} points from {team_name}", "team_name": team_name})
+
+
+# ---------------- GET PENALTIES ----------------
+@bgmi_league.route("/<league_id>/penalties", methods=["GET"])
+@jwt_required()
+def get_penalties(league_id):
+    """Get all penalties for a league."""
+    league = mongo.db.bgmi_league.find_one({"_id": safe_object_id(league_id)})
+    if not league:
+        return jsonify([])
+
+    penalties = list(mongo.db.bgmi_league_penalties.find(
+        {"league_id": league["_id"]}
+    ).sort("created_at", -1))
+
+    result = []
+    for p in penalties:
+        reg = mongo.db.registrations.find_one({"_id": p.get("registration_id")})
+        result.append({
+            "id": str(p["_id"]),
+            "registration_id": str(p["registration_id"]),
+            "team_name": reg.get("team_name") or reg.get("player_name", "Unknown") if reg else "Unknown",
+            "points": p["points"],
+            "reason": p["reason"],
+            "created_at": p["created_at"].isoformat() if p.get("created_at") else None,
+        })
+
+    return jsonify(result)
+
+
+# ---------------- DELETE PENALTY ----------------
+@bgmi_league.route("/<league_id>/penalties/<penalty_id>", methods=["DELETE"])
+@admin_required
+def delete_penalty(league_id, penalty_id):
+    """Remove a penalty (refund points)."""
+    penalty = mongo.db.bgmi_league_penalties.find_one({"_id": safe_object_id(penalty_id)})
+    if not penalty:
+        return jsonify({"error": "Penalty not found"}), 404
+    mongo.db.bgmi_league_penalties.delete_one({"_id": penalty["_id"]})
+    return jsonify({"message": "Penalty removed, points refunded"})
 
 
 # ---------------- BGMI LEAGUE STATS ----------------
