@@ -173,3 +173,122 @@ def reject_feedback(feedback_id):
 def community_reviews():
     cursor = mongo.db.feedbacks.find({"status": "approved"}).sort("created_at", -1).limit(20)
     return jsonify([serialize_feedback(d) for d in cursor])
+
+
+@feedbacks.route("/pending-launcher", methods=["GET"])
+@jwt_required()
+def pending_launcher():
+    user = get_current_user()
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    user_id = user["_id"]
+
+    registrations = list(mongo.db.registrations.find({
+        "user_id": str(user_id),
+        "payment_status": {"$in": ["approved", "teammate"]}
+    }))
+
+    tournament_ids = []
+    reg_map = {}
+    for r in registrations:
+        tid = r.get("tournament_id")
+        if tid:
+            tournament_ids.append(tid)
+            reg_map[str(tid)] = r
+
+    if not tournament_ids:
+        return jsonify({"pending": []})
+
+    tournaments = list(mongo.db.tournaments.find({
+        "_id": {"$in": tournament_ids},
+        "status": "completed",
+        "feedback_launched": True
+    }))
+
+    if not tournaments:
+        return jsonify({"pending": []})
+
+    existing_feedbacks = list(mongo.db.feedbacks.find({
+        "user_id": user_id,
+        "tournament_id": {"$in": tournament_ids}
+    }))
+    feedback_tournament_ids = {str(f.get("tournament_id")) for f in existing_feedbacks}
+
+    pending = []
+    for t in tournaments:
+        tid_str = str(t["_id"])
+        if tid_str not in feedback_tournament_ids:
+            pending.append({
+                "tournament_id": tid_str,
+                "tournament_name": t.get("name", "Tournament"),
+            })
+
+    return jsonify({"pending": pending})
+
+
+@feedbacks.route("/admin/launchable-tournaments", methods=["GET"])
+@admin_required
+def launchable_tournaments():
+    tournaments = list(mongo.db.tournaments.find({"status": "completed"}))
+
+    result = []
+    for t in tournaments:
+        tid = t["_id"]
+        total_players = mongo.db.registrations.count_documents({
+            "tournament_id": tid,
+            "payment_status": {"$in": ["approved", "teammate"]}
+        })
+        feedback_count = mongo.db.feedbacks.count_documents({"tournament_id": tid})
+        result.append({
+            "id": str(tid),
+            "name": t.get("name", "Tournament"),
+            "feedback_launched": bool(t.get("feedback_launched", False)),
+            "total_players": total_players,
+            "feedback_count": feedback_count,
+        })
+
+    return jsonify(result)
+
+
+@feedbacks.route("/admin/launch/<tournament_id>", methods=["POST"])
+@admin_required
+def launch_feedback(tournament_id):
+    try:
+        tid = ObjectId(tournament_id)
+    except (InvalidId, TypeError):
+        return jsonify({"error": "Invalid tournament ID"}), 400
+
+    tournament = mongo.db.tournaments.find_one({"_id": tid})
+    if not tournament:
+        return jsonify({"error": "Tournament not found"}), 404
+
+    if tournament.get("status") != "completed":
+        return jsonify({"error": "Tournament must be completed before launching feedback"}), 400
+
+    mongo.db.tournaments.update_one(
+        {"_id": tid},
+        {"$set": {"feedback_launched": True}}
+    )
+
+    return jsonify({"message": "Feedback launched", "tournament_id": str(tid)})
+
+
+@feedbacks.route("/admin/launch/<tournament_id>", methods=["DELETE"])
+@admin_required
+def unlaunch_feedback(tournament_id):
+    try:
+        tid = ObjectId(tournament_id)
+    except (InvalidId, TypeError):
+        return jsonify({"error": "Invalid tournament ID"}), 400
+
+    tournament = mongo.db.tournaments.find_one({"_id": tid})
+    if not tournament:
+        return jsonify({"error": "Tournament not found"}), 404
+
+    mongo.db.tournaments.update_one(
+        {"_id": tid},
+        {"$set": {"feedback_launched": False}}
+    )
+
+    return jsonify({"message": "Feedback launch revoked", "tournament_id": str(tid)})

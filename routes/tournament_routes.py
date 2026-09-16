@@ -1109,6 +1109,7 @@ def my_tournaments():
                 "status": status,
                 "is_winner": is_winner,
                 "winner": winner_name,
+                "winner_id": str(t.get("winner_id", "")) if t.get("winner_id") else None,
                 "format": t.get("format", "quick"),
                 "mode": t.get("mode", "solo"),
                 "team_size": t.get("team_size", 1),
@@ -1332,7 +1333,7 @@ def declare_winner():
     # Also increment tournaments_played for the winner if first time
     # (only if they don't already have a stats record for this game)
     from routes.player_stats_routes import get_player_stats as _get_stats
-    existing_stats = _get_stats(winner_id, game)
+    existing_stats = _get_stats(mongo, winner_id, game)
     if existing_stats.get("tournaments_played", 0) == 0:
         upsert_player_stats(winner_id, game, tournaments_played_delta=1)
 

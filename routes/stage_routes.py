@@ -158,6 +158,7 @@ def compute_match_mvp(results):
                     "name": p["name"],
                     "team_name": r["name"],
                     "registration_id": r["registration_id"],
+                    "user_id": p.get("user_id") or r.get("user_id"),
                     "kills": p_kills,
                     "placement": placement,
                     "score": score,
@@ -969,6 +970,21 @@ def tournament_stats(tournament_id):
     cross_pod_matches = list(mongo.db.cross_pod_matches.find({"tournament_id": tid, "status": "completed"}))
     matches = stage_matches + cross_pod_matches
 
+    # Roster lets us resolve a player's user_id from (registration_id, name) so
+    # the frontend can open profile cards from stats tables.
+    roster = get_roster_by_id(tournament_id)
+
+    def user_id_for(registration_id, player_name):
+        entry = roster.get(registration_id)
+        if not entry:
+            return None
+        if entry.get("user_id") and entry.get("name") == player_name:
+            return entry.get("user_id")
+        for member in entry.get("team_members") or []:
+            if isinstance(member, dict) and member.get("name") == player_name:
+                return member.get("user_id")
+        return None
+
     team_totals = {}
     player_totals = {}
     mvp_counts = {}
@@ -990,7 +1006,8 @@ def tournament_stats(tournament_id):
             for pl in players:
                 key = f"{rid}::{pl['name']}"
                 entry = player_totals.setdefault(key, {
-                    "name": pl["name"], "team_name": r["name"], "registration_id": rid, "total_kills": 0
+                    "name": pl["name"], "team_name": r["name"], "registration_id": rid, "total_kills": 0,
+                    "user_id": user_id_for(rid, pl["name"]),
                 })
                 entry["total_kills"] += pl.get("kills", 0)
 
@@ -998,7 +1015,8 @@ def tournament_stats(tournament_id):
         if mvp:
             key = f"{mvp['registration_id']}::{mvp['name']}"
             entry = mvp_counts.setdefault(key, {
-                "name": mvp["name"], "team_name": mvp["team_name"], "count": 0
+                "name": mvp["name"], "team_name": mvp["team_name"], "count": 0,
+                "user_id": user_id_for(mvp["registration_id"], mvp["name"]),
             })
             entry["count"] += 1
 

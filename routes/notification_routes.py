@@ -1,4 +1,4 @@
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, request
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -34,9 +34,19 @@ def create_notification(mongo_instance, user_id, message, ntype="info", tourname
 def my_notifications():
     user_id = get_jwt_identity()
 
+    try:
+        page = max(int(request.args.get("page", 1)), 1)
+        limit = min(int(request.args.get("limit", 30)), 100)
+    except (ValueError, TypeError):
+        page = 1
+        limit = 30
+    skip = (page - 1) * limit
+
+    total = mongo.db.notifications.count_documents({"user_id": user_id})
+
     items = list(mongo.db.notifications.find(
         {"user_id": user_id}
-    ).sort("created_at", -1).limit(30))
+    ).sort("created_at", -1).skip(skip).limit(limit))
 
     unread_count = mongo.db.notifications.count_documents({
         "user_id": user_id,
@@ -54,7 +64,13 @@ def my_notifications():
             "created_at": to_utc_iso(n.get("created_at"))
         })
 
-    return jsonify({"notifications": data, "unread_count": unread_count})
+    return jsonify({
+        "notifications": data,
+        "unread_count": unread_count,
+        "total": total,
+        "page": page,
+        "pages": (total + limit - 1) // limit,
+    })
 
 
 # ---------------- MARK ONE AS READ ----------------
@@ -68,10 +84,13 @@ def mark_read(notification_id):
     except (InvalidId, TypeError):
         return jsonify({"error": "Invalid notification id"}), 400
 
-    mongo.db.notifications.update_one(
+    result = mongo.db.notifications.update_one(
         {"_id": oid, "user_id": user_id},
         {"$set": {"read": True}}
     )
+
+    if result.matched_count == 0:
+        return jsonify({"error": "Notification not found"}), 404
 
     return jsonify({"message": "Marked as read"})
 

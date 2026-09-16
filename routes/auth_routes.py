@@ -241,13 +241,70 @@ def profile():
     })
 
 
+# PUBLIC PROFILE (view any user by ID)
+@auth.route("/profile/<user_id>", methods=["GET"])
+def public_profile(user_id):
+
+    try:
+        uid = ObjectId(user_id)
+    except Exception:
+        return jsonify({"error": "Invalid user ID"}), 400
+
+    user = mongo.db.users.find_one({"_id": uid})
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    registrations = list(mongo.db.registrations.find({"user_id": user_id}))
+    tournaments_joined = sum(1 for r in registrations if r.get("payment_status") == "approved")
+
+    wins = 0
+    prize_won = 0
+    for r in registrations:
+        if r.get("payment_status") != "approved":
+            continue
+        t = mongo.db.tournaments.find_one({"_id": r.get("tournament_id")})
+        if t and t.get("winner_id") == user_id:
+            wins += 1
+            prize_won += t.get("prize_pool", 0)
+
+    win_rate = round((wins / tournaments_joined * 100), 1) if tournaments_joined > 0 else 0
+
+    created_at = user.get("created_at", "")
+    joined_label = ""
+    if created_at:
+        from datetime import datetime
+        try:
+            dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            joined_label = dt.strftime("%b %Y")
+        except Exception:
+            joined_label = ""
+
+    return jsonify({
+        "user_id": user_id,
+        "name": user.get("name", ""),
+        "username": user.get("username", ""),
+        "college": user.get("college", ""),
+        "role": user.get("role", "player"),
+        "avatarId": str(user.get("avatarId", "")) if user.get("avatarId") else None,
+        "joined": joined_label,
+        "stats": {
+            "tournaments_joined": tournaments_joined,
+            "wins": wins,
+            "prize_won": prize_won,
+            "win_rate": win_rate,
+        }
+    })
+
+
 # REFRESH ACCESS TOKEN
 @auth.route("/refresh", methods=["POST"])
 @jwt_required(refresh=True)
 def refresh_token():
     identity = get_jwt_identity()
-    claims = get_jwt()
-    role = claims.get("role", "user")
+    # Refresh tokens don't carry a role claim — read the user's current
+    # role from the DB so it survives token refreshes (incl. admins).
+    user = mongo.db.users.find_one({"_id": ObjectId(identity)})
+    role = (user or {}).get("role", "user")
     new_token = create_access_token(identity=identity, additional_claims={"role": role})
     return jsonify({"token": new_token})
 
@@ -682,3 +739,37 @@ def admin_change_in_game_name():
         "old_name": old_name,
         "new_name": new_name
     })
+
+
+# ---------------------------------------------------------------------------
+# USER SEARCH (for admin notification targeting)
+# ---------------------------------------------------------------------------
+
+@auth.route("/search-users", methods=["GET"])
+@jwt_required()
+def search_users():
+    query = (request.args.get("q") or "").strip()
+    try:
+        limit = min(int(request.args.get("limit", 10)), 25)
+    except (ValueError, TypeError):
+        limit = 10
+
+    if len(query) < 2:
+        return jsonify({"users": []})
+
+    regex = re.compile(re.escape(query), re.IGNORECASE)
+
+    users = list(mongo.db.users.find(
+        {"$or": [{"username": regex}, {"email": regex}]}
+    ).limit(limit))
+
+    data = []
+    for u in users:
+        data.append({
+            "id": str(u["_id"]),
+            "username": u.get("username", ""),
+            "email": u.get("email", ""),
+            "role": u.get("role", "user"),
+        })
+
+    return jsonify({"users": data})

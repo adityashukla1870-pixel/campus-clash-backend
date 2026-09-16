@@ -84,7 +84,6 @@ def upsert_global_wins(user_id, delta):
 # ---- PLAYER STATS ----
 
 @player_stats.route("/player/<user_id>/stats", methods=["GET"])
-@jwt_required()
 def get_user_stats(user_id):
     """Get stats for a specific user."""
     game = request.args.get("game")
